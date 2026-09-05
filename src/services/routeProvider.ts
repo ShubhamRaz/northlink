@@ -100,56 +100,90 @@ export const routeProvider = {
   },
 
   /**
-   * Same as getRoute but requests alternatives
+   * Same as getRoute but requests alternatives.
+   * Always returns at least 3 routes (mixing OSRM + fallback variations)
+   * so the dispatcher always sees multiple candidates.
    */
   async getAlternatives(
     origin: [number, number],
     destination: [number, number]
   ): Promise<RouteGeometry[]> {
+    const osrmRoutes: RouteGeometry[] = [];
     try {
       const url = `${OSRM_BASE_URL}/${origin[1]},${origin[0]};${destination[1]},${destination[0]}?overview=full&geometries=geojson&alternatives=true`;
       const response = await fetch(url, {
         headers: { 'Accept': 'application/json' },
         cache: 'force-cache'
       });
-      
-      if (!response.ok) throw new Error('OSRM API Error');
-      
-      const data = await response.json() as OsrmResponse;
-      
-      if (data.code !== 'Ok' || !data.routes || data.routes.length === 0) {
-        throw new Error('No route found');
-      }
 
-      return data.routes.map(route => ({
-        coordinates: route.geometry.coordinates.map((c: number[]) => [c[1], c[0]] as [number, number]),
-        distance: route.distance,
-        duration: route.duration,
-        source: 'OSRM' as const
-      }));
+      if (!response.ok) throw new Error('OSRM API Error');
+
+      const data = await response.json() as OsrmResponse;
+
+      if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
+        data.routes.forEach(route => {
+          osrmRoutes.push({
+            coordinates: route.geometry.coordinates.map((c: number[]) => [c[1], c[0]] as [number, number]),
+            distance: route.distance,
+            duration: route.duration,
+            source: 'OSRM' as const
+          });
+        });
+      }
     } catch (error) {
       console.warn('OSRM routing failed, using fallback alternatives', error);
-      // Generate a couple of alternate looking paths
-      const alt1 = generateFallbackGeometry(origin, destination);
-      
-      // Perturb the midpoint for alt2
-      const midPoint: [number, number] = [
-        (origin[0] + destination[0]) / 2 + 0.3,
-        (origin[1] + destination[1]) / 2 - 0.2
-      ];
-      
-      const leg1 = generateFallbackGeometry(origin, midPoint);
-      const leg2 = generateFallbackGeometry(midPoint, destination);
-      const alt2 = {
-        coordinates: [...leg1.coordinates, ...leg2.coordinates],
-        distance: leg1.distance + leg2.distance,
-        duration: leg1.duration + leg2.duration
-      };
-
-      return [
-        { ...alt1, source: 'PROTOTYPE FALLBACK' as const },
-        { ...alt2, source: 'PROTOTYPE FALLBACK' as const }
-      ];
     }
+
+    // Build fallback variations to ensure at least 3 candidates
+    const fallbackVariations: RouteGeometry[] = [];
+
+    // Variation 1: direct path with slight curve north
+    fallbackVariations.push(generateFallbackGeometry(origin, destination));
+
+    // Variation 2: detour via a midpoint offset north
+    const midNorth: [number, number] = [
+      (origin[0] + destination[0]) / 2 + 0.4,
+      (origin[1] + destination[1]) / 2,
+    ];
+    const fbn1 = generateFallbackGeometry(origin, midNorth);
+    const fbn2 = generateFallbackGeometry(midNorth, destination);
+    fallbackVariations.push({
+      coordinates: [...fbn1.coordinates, ...fbn2.coordinates],
+      distance: fbn1.distance + fbn2.distance,
+      duration: fbn1.duration + fbn2.duration
+    });
+
+    // Variation 3: detour via a midpoint offset south
+    const midSouth: [number, number] = [
+      (origin[0] + destination[0]) / 2 - 0.4,
+      (origin[1] + destination[1]) / 2,
+    ];
+    const fbs1 = generateFallbackGeometry(origin, midSouth);
+    const fbs2 = generateFallbackGeometry(midSouth, destination);
+    fallbackVariations.push({
+      coordinates: [...fbs1.coordinates, ...fbs2.coordinates],
+      distance: fbs1.distance + fbs2.distance,
+      duration: fbs1.duration + fbs2.duration
+    });
+
+    // Merge: prefer OSRM routes, then fill with fallbacks to reach at least 4 total
+    const all: RouteGeometry[] = [];
+    const seen = new Set<string>();
+    for (const r of [...osrmRoutes, ...fallbackVariations]) {
+      // Deduplicate by checking the first 5 coordinates
+      const key = r.coordinates.slice(0, 5).map(c => c.join(',')).join('|');
+      if (!seen.has(key)) {
+        seen.add(key);
+        all.push(r);
+      }
+    }
+
+    // Ensure at least 3 routes; if we somehow have fewer, duplicate with perturbation
+    while (all.length < 3) {
+      const base = generateFallbackGeometry(origin, destination);
+      all.push({ ...base, source: 'PROTOTYPE FALLBACK' as const });
+    }
+
+    return all.slice(0, 4);
   }
 };

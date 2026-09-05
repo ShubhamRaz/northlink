@@ -69,8 +69,13 @@ class SimulationEngine {
       }
 
       // ── AUTO-DETECT: check if any verified, unresolved incident is close
-      // ahead on the current route and auto-trigger impact assessment ──
-      if (vehicle.currentRouteGeometry?.length && shipment.routeId) {
+      // ahead on the current route and auto-trigger impact assessment.
+      // Only trigger if there's NO existing recommendation for this shipment
+      // (i.e., the dispatcher hasn't already decided to reroute or keep route).
+      const hasAnyRec = state.routeRecommendations.some(
+        r => r.shipmentId === shipment.id && (r.status === 'ACTIVE' || r.status === 'APPROVED' || r.status === 'REJECTED')
+      );
+      if (!hasAnyRec && vehicle.currentRouteGeometry?.length && shipment.routeId) {
         const nearestIncident = state.incidents.find(inc => {
           if (inc.verificationStatus !== 'VERIFIED' || inc.resolutionStatus !== 'UNRESOLVED') return false;
           // Check if incident is near the vehicle's route ahead
@@ -98,16 +103,20 @@ class SimulationEngine {
         }
       }
 
-      const routeDuration = state.journeyAnalysis?.shipmentId === shipment.id
-        ? Math.max(state.journeyAnalysis.outlook.currentTravelMinutes, 1)
+      // Check if we have journey analysis for this specific shipment AND route.
+      // After a reroute, the journeyAnalysis may be stale (old routeId), so we
+      // must verify the routeId matches before using its segments.
+      const isSelectedAnalysis = state.journeyAnalysis?.shipmentId === shipment.id
+        && state.journeyAnalysis?.routeId === shipment.routeId;
+
+      // Use the journey analysis duration only if it matches the current route
+      const routeDuration = isSelectedAnalysis
+        ? Math.max(state.journeyAnalysis!.outlook.currentTravelMinutes, 1)
         : 240;
       const currentProgressMinutes = vehicle.progressMinutes ?? (vehicle.progress ?? 0) * routeDuration;
       const newProgress = Math.min(currentProgressMinutes + simulatedMinutesElapsed, routeDuration);
       let newCoords = vehicle.coordinates;
       let currentSpeed = vehicle.speed;
-
-      // Check if we have journey analysis for this specific shipment
-      const isSelectedAnalysis = state.journeyAnalysis?.shipmentId === shipment.id;
 
       if (isSelectedAnalysis && state.journeyAnalysis) {
         // Precise interpolation using journey analysis segments
@@ -227,34 +236,8 @@ class SimulationEngine {
         state.refreshJourneyAnalysis();
       }
     }
-
-    // Auto-detect verified unresolved incidents ahead on the route and trigger impact assessment
-    for (const shipment of activeShipments) {
-      const vehicle = state.vehicles.find(v => v.id === shipment.assignedVehicleId);
-      if (!vehicle || vehicle.status !== 'In Transit' || !vehicle.currentRouteGeometry?.length) continue;
-
-      // Check if there's a verified unresolved incident ahead on this vehicle's route
-      const vehicleIndex = this.nearestRouteIndex(vehicle.coordinates, vehicle.currentRouteGeometry);
-      const hasExistingRec = state.routeRecommendations.some(r =>
-        r.shipmentId === shipment.id && r.status === 'ACTIVE'
-      );
-
-      if (!hasExistingRec) {
-        for (const incident of state.incidents) {
-          if (incident.verificationStatus !== 'VERIFIED' || incident.resolutionStatus !== 'UNRESOLVED') continue;
-
-          const incidentIndex = this.nearestRouteIndex(incident.coordinates, vehicle.currentRouteGeometry);
-          const distToRoute = this.haversineKm(incident.coordinates, vehicle.currentRouteGeometry[incidentIndex]);
-
-          // If incident is ahead of vehicle and within 50km of the route
-          if (incidentIndex > vehicleIndex && distToRoute <= 50) {
-            // Auto-trigger impact assessment
-            state.assessIncidentImpact(incident.id);
-            break; // Only trigger once per tick
-          }
-        }
-      }
-    }
+    // Note: Auto-detection of incidents ahead is handled in the per-shipment loop above
+    // (lines 71-104), which properly skips shipments that already have a recommendation.
   }
 
   triggerRandomEvent() {}

@@ -339,12 +339,12 @@ export function OptimizerView() {
                   </div>
                 )}
               </div>
-            ) : (!bestRoute && !activeRec && activeShipment?.status !== 'Planned' ? (
-              <div className="bg-red-900/20 border border-red-500/30 rounded-xl p-6 flex items-center gap-4">
-                <ShieldAlert className="w-8 h-8 text-red-500 shrink-0" />
+            ) : (!bestRoute && !activeRec && activeRoutes.length === 0 && activeShipment?.status !== 'Planned' ? (
+              <div className="bg-amber-900/20 border border-amber-500/30 rounded-xl p-6 flex items-center gap-4">
+                <ShieldAlert className="w-8 h-8 text-amber-500 shrink-0" />
                 <div>
-                  <h2 className="text-lg font-bold text-red-400">No Feasible Routes Available</h2>
-                  <p className="text-sm text-red-300">All evaluated routes contain BLOCKED corridors or violate safety constraints.</p>
+                  <h2 className="text-lg font-bold text-amber-400">No Routes Analyzed Yet</h2>
+                  <p className="text-sm text-amber-300">Click ANALYZE ROUTES to generate candidate routes for this shipment.</p>
                 </div>
               </div>
             ) : null)}

@@ -259,3 +259,54 @@ Stage Summary:
 - Browser no longer freezes when changing shipment
 - Map shows vehicle routes correctly
 - Cargo automatically detects disasters on its path and generates reroute recommendations without manual intervention
+
+---
+Task ID: ROUTES-MAP-REROUTE-FIXES
+Agent: main (fix route generation, map display, reroute flow)
+Task: Fix "not showing more routes", "cargo stops after incident", "map showing no routes", verify rerouting works
+
+Work Log:
+- Fixed route generation to always show 3-4 candidate routes:
+  - OSRM `getAlternatives` now merges OSRM routes with 3 fallback variations (direct, north detour, south detour)
+  - Deduplicates by checking first 5 coordinates
+  - Always returns at least 3 routes, max 4
+
+- Fixed BLOCKED threshold (was too aggressive):
+  - Routes were getting BLOCKED (probability >= 0.8) when a disaster was 50km away
+  - Now uses distance-weighted risk: incidents at 0km have full impact, at 50km have 10% impact
+  - Routes are only BLOCKED if a critical hard-blockage incident (landslide/road blockage/bridge damage) is directly ON the route (within 10km)
+  - Otherwise routes are RESTRICTED (passable but high-risk)
+
+- Fixed OptimizerView "No Feasible Routes Available" error:
+  - Changed condition to only show error when `activeRoutes.length === 0` (no routes analyzed)
+  - When routes exist but none are feasible, the candidate routes section still shows (with BLOCKED badges)
+
+- Fixed cargo stopping permanently after reroute (ROOT CAUSE):
+  - `decideMidJourneyRoute` only updated ONE recommendation by `rec.id`, leaving others ACTIVE
+  - The simulation's `hasActiveRec` check found the remaining ACTIVE recommendation and held the vehicle at speed=0
+  - Fix: `decideMidJourneyRoute` now marks ALL ACTIVE recommendations for the shipment as APPROVED (for CHANGE) or REJECTED (for KEEP)
+  - Also fixed `hasAnyRec` check in simulation auto-detection to include APPROVED and REJECTED statuses (not just ACTIVE)
+
+- Fixed simulation using stale journeyAnalysis after reroute:
+  - `isSelectedAnalysis` now checks both `shipmentId` AND `routeId` match
+  - If journeyAnalysis is for the old route, simulation falls through to using `vehicle.currentRouteGeometry`
+
+- Removed duplicate auto-detection code at end of simulation tick (was redundant with per-shipment check)
+
+- Fixed injected disaster alert message to say "Impact assessment will trigger automatically" instead of "Awaiting verification"
+
+Verified end-to-end:
+1. ✅ Dispatched cargo → 4 candidate routes shown (1 OSRM + 3 fallbacks)
+2. ✅ Injected disaster near Imphal → routes showed as RESTRICTED (not all BLOCKED)
+3. ✅ Reroute recommendation appeared: "Reduces risk from 34% to 26%"
+4. ✅ Approved reroute → driver acknowledged → vehicle back to IN TRANSIT
+5. ✅ After 15 seconds: vehicle STILL IN TRANSIT (not re-paused)
+6. ✅ Vehicle speed: 36-41 km/h, ETA decreasing (6h 19m → 6h 8m)
+7. ✅ No re-pause logs in console
+
+Stage Summary:
+- Multiple candidate routes (3-4) always shown
+- Routes use distance-weighted risk (not all BLOCKED for distant incidents)
+- Cargo stays moving after reroute approval and driver acknowledgment
+- Map shows route polylines correctly
+- Full rerouting flow works end-to-end

@@ -673,7 +673,8 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       set(s => ({
         decisionHistory: [hist, ...s.decisionHistory],
-        routeRecommendations: s.routeRecommendations.map(r => r.id === rec.id ? { ...r, status: 'APPROVED' } : r),
+        // Mark ALL active recommendations for this shipment as APPROVED (not just one)
+        routeRecommendations: s.routeRecommendations.map(r => r.shipmentId === shipmentId && r.status === 'ACTIVE' ? { ...r, status: 'APPROVED' } : r),
         shipments: s.shipments.map(sh => sh.id === shipmentId ? { ...sh, routeId: newRoute.id, status: 'Route Change Pending', eta: hist.eta || sh.eta } : sh),
         vehicles: s.vehicles.map(v => v.id === shipment.assignedVehicleId ? {
           ...v,
@@ -718,7 +719,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       };
       set(s => ({
         decisionHistory: [hist, ...s.decisionHistory],
-        routeRecommendations: s.routeRecommendations.map(r => r.id === rec.id ? { ...r, status: 'REJECTED' } : r),
+        // Mark ALL active recommendations for this shipment as REJECTED (not just one)
+        routeRecommendations: s.routeRecommendations.map(r => r.shipmentId === shipmentId && r.status === 'ACTIVE' ? { ...r, status: 'REJECTED' } : r),
         shipments: s.shipments.map(item => item.id === shipmentId ? { ...item, status: remainsUnsafe ? 'Paused for Safety' : 'In Transit' } : item),
         vehicles: s.vehicles.map(item => item.id === shipment.assignedVehicleId ? { ...item, status: remainsUnsafe ? 'Paused for Safety' : 'In Transit' } : item)
       }));
@@ -1095,7 +1097,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     get().addAlert({
       type: 'INCIDENT',
       title: `${type} Injected at Map Point`,
-      message: `${type} (${severity}) reported near ${location}. Awaiting verification.`,
+      message: `${type} (${severity}) reported near ${location}. Impact assessment will trigger automatically for in-transit shipments.`,
       severity: severity === 'Critical' ? 'High' : 'Medium',
       recipientRole: 'Dispatcher',
       actionRequired: true,
