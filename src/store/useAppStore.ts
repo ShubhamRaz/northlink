@@ -597,9 +597,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         // was causing the browser to hang/time out.
         const alternatives = state.activeRoutes;
         const currentRouteAlt = alternatives.find(a => a.id === shipment.routeId);
-        // Prefer feasible, otherwise pick the least-risky alternative so the dispatcher always sees options
-        const bestRoute = alternatives.find(a => a.isFeasible && a.id !== shipment.routeId)
-          || alternatives.slice().sort((a, b) => a.risk - b.risk)[0];
+        // Prefer feasible OSRM routes, then feasible fallbacks, then least-risky overall.
+        // This ensures the recommended route follows real roads when available.
+        const feasibleOsrm = alternatives.find(a => a.isFeasible && a.id !== shipment.routeId && a.coordinates.length > 100);
+        const feasibleAny = alternatives.find(a => a.isFeasible && a.id !== shipment.routeId);
+        const bestRoute = feasibleOsrm || feasibleAny || alternatives.slice().sort((a, b) => a.risk - b.risk)[0];
         
         if (bestRoute) {
           const allBlocked = !alternatives.some(a => a.isFeasible);

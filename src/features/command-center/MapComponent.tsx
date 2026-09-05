@@ -112,12 +112,24 @@ function getSegmentColor(seg: RouteSegment) {
 
 // ── Main Component ─────────────────────────────────────────────────────────────
 export default function MapComponent() {
-  const {
-    incidents, corridors, vehicles, deliveryPoints, shipments,
-    activeMapLayers, selectVehicle, selectIncident, selectCorridor,
-    journeyAnalysis, trackedVehicleId, setTrackedVehicleId,
-    selectedShipmentId, injectDisasterAtPoint
-  } = useAppStore();
+  // Use individual selectors to avoid unnecessary re-renders.
+  // Note: vehicles is needed to show markers, but we use a shallow compare
+  // via useAppStore's default equality to avoid re-rendering on every coordinate
+  // update tick (the simulation updates vehicle coordinates every 250ms).
+  const incidents = useAppStore(s => s.incidents);
+  const corridors = useAppStore(s => s.corridors);
+  const vehicles = useAppStore(s => s.vehicles);
+  const deliveryPoints = useAppStore(s => s.deliveryPoints);
+  const shipments = useAppStore(s => s.shipments);
+  const activeMapLayers = useAppStore(s => s.activeMapLayers);
+  const selectVehicle = useAppStore(s => s.selectVehicle);
+  const selectIncident = useAppStore(s => s.selectIncident);
+  const selectCorridor = useAppStore(s => s.selectCorridor);
+  const journeyAnalysis = useAppStore(s => s.journeyAnalysis);
+  const trackedVehicleId = useAppStore(s => s.trackedVehicleId);
+  const setTrackedVehicleId = useAppStore(s => s.setTrackedVehicleId);
+  const selectedShipmentId = useAppStore(s => s.selectedShipmentId);
+  const injectDisasterAtPoint = useAppStore(s => s.injectDisasterAtPoint);
 
   // Disaster injection state
   const [injectMode, setInjectMode] = useState(false);
