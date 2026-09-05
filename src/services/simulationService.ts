@@ -5,7 +5,7 @@ class SimulationEngine {
   private tickInterval: NodeJS.Timeout | null = null;
   private isRunning = false;
   private playbackSpeed = 1;
-  private TICK_MS = 1000;
+  private TICK_MS = 2000; // 2 seconds per tick (was 1s) to reduce UI load
   
   start() {
     if (this.isRunning) return;

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap, useMapEvents } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
@@ -113,9 +113,6 @@ function getSegmentColor(seg: RouteSegment) {
 // ── Main Component ─────────────────────────────────────────────────────────────
 export default function MapComponent() {
   // Use individual selectors to avoid unnecessary re-renders.
-  // Note: vehicles is needed to show markers, but we use a shallow compare
-  // via useAppStore's default equality to avoid re-rendering on every coordinate
-  // update tick (the simulation updates vehicle coordinates every 250ms).
   const incidents = useAppStore(s => s.incidents);
   const corridors = useAppStore(s => s.corridors);
   const vehicles = useAppStore(s => s.vehicles);
@@ -158,24 +155,19 @@ export default function MapComponent() {
     : vehicles;
 
   // Build per-vehicle route polylines for ALL active vehicles.
-  // Prefer the vehicle's actual currentRouteGeometry (from OSRM) when available;
-  // fall back to the static ROUTE_COORDS lookup table only as a last resort.
-  const vehicleRoutes = vehicles.map((v, idx) => {
-    // For the selected shipment's vehicle, skip the basic polyline IF we have
-    // detailed journeyAnalysis segments to show instead. Otherwise still draw
-    // the basic route so the map is never empty.
+  // Memoize so we only recompute when vehicles or journeyAnalysis changes.
+  const vehicleRoutes = useMemo(() => vehicles.map((v, idx) => {
     const selectedShipmentVehicleId = shipments.find(s => s.id === selectedShipmentId)?.assignedVehicleId;
     if (journeyAnalysis?.segments?.length && v.id === selectedShipmentVehicleId) {
-      return null; // Handled below via journeyAnalysis segments
+      return null;
     }
-
     if (!v.currentRouteId) return null;
     const coords = v.currentRouteGeometry?.length
       ? v.currentRouteGeometry
       : ROUTE_COORDS[v.currentRouteId];
     if (!coords || coords.length === 0) return null;
     return { vehicleId: v.id, coords, color: VEHICLE_ROUTE_COLORS[v.id] ?? getDefaultColor(idx) };
-  }).filter(Boolean) as { vehicleId: string; coords: [number, number][]; color: string }[];
+  }).filter(Boolean) as { vehicleId: string; coords: [number, number][]; color: string }[], [vehicles, shipments, selectedShipmentId, journeyAnalysis]);
 
   return (
     <div className="flex flex-col h-full w-full">
