@@ -4,7 +4,6 @@ import React, { useState } from 'react';
 import { X, Package, MapPin, Navigation, Clock, ShieldAlert, RefreshCw, Calendar } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import { Shipment, ShipmentScheduleType } from '@/types';
-import { useRouter } from 'next/navigation';
 
 interface AddCargoModalProps {
   onClose: () => void;
@@ -56,8 +55,7 @@ const VEHICLES = [
 ];
 
 export function AddCargoModal({ onClose }: AddCargoModalProps) {
-  const { createShipment } = useAppStore();
-  const router = useRouter();
+  const { createShipment, setView } = useAppStore();
   const [step, setStep] = useState<1 | 2>(1);
   const [scheduleType, setScheduleType] = useState<ShipmentScheduleType>('one-time');
   const [form, setForm] = useState({
@@ -82,7 +80,7 @@ export function AddCargoModal({ onClose }: AddCargoModalProps) {
       scheduledTime: form.scheduledTime || undefined,
     });
     onClose();
-    router.push('/optimizer');
+    setView('optimizer');
   };
 
   const upd = (k: string, v: string) => setForm(f => ({ ...f, [k]: v }));

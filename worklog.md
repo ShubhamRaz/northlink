@@ -165,3 +165,32 @@ Stage Summary:
 - Simulation auto-restarts after reload
 - Lint: 0 errors, 1 pre-existing warning
 - Dev log: clean, no errors
+
+---
+Task ID: ADDCARGO-FIX
+Agent: main (fix Add Cargo issue)
+Task: Fix the "new cargo adding issue" — Add Cargo modal caused 404 and didn't select the new shipment
+
+Work Log:
+- Root cause 1: AddCargoModal used `useRouter()` from next/navigation and called `router.push('/optimizer')` — but `/optimizer` doesn't exist as a route in this single-page app, causing a 404 page after creating cargo
+- Root cause 2: ManualDispatchForm had the same `router.push('/optimizer')` bug
+- Root cause 3: OptimizerView hardcoded `selectedShipment = 'MED-204'` instead of reading from the store's `selectedShipmentId` — so after creating a new shipment, the optimizer showed MED-204 instead of the newly created shipment, and all workflow buttons (Cargo Ready, Approve, Dispatch) operated on the wrong shipment
+
+Fixes applied:
+- AddCargoModal.tsx: Removed `useRouter` import; replaced `router.push('/optimizer')` with `setView('optimizer')` from the store
+- ManualDispatchForm.tsx: Same fix — removed `useRouter`, replaced `router.push('/optimizer')` with `setView('optimizer')`
+- OptimizerView.tsx: Initialize `selectedShipment` from `selectedShipmentId` (set by createShipment) or `shipments[0]?.id`; added useEffect to sync when store selection changes (e.g. after Add Cargo)
+
+Verified end-to-end:
+1. Click "Add Cargo" → fill form → "Cargo Ready — Forecast Routes"
+2. No 404 — URL stays at `/`, navigates to Route Optimizer view
+3. New shipment (SHIP-1132) is auto-selected in the dropdown
+4. CARGO READY → routes analyzed → APPROVE ROUTE → DISPATCH CARGO
+5. Shipment becomes "In Transit" with ETA, state persists to localStorage
+6. Simulation starts moving the vehicle (ETA decreases over time)
+7. State survives page reload
+
+Stage Summary:
+- Add Cargo now works end-to-end without 404 errors
+- New shipments are automatically selected in the Route Optimizer
+- The full lifecycle (Planned → Ready → In Transit) works on newly created shipments

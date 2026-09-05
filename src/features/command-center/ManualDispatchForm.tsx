@@ -4,11 +4,9 @@ import React, { useState } from 'react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
 import { useAppStore } from '@/store/useAppStore';
 import { Package, MapPin, Navigation, Clock, ShieldAlert, CheckCircle2 } from 'lucide-react';
-import { useRouter } from 'next/navigation';
 
 export function ManualDispatchForm() {
-  const router = useRouter();
-  const { createShipment } = useAppStore();
+  const { createShipment, setView } = useAppStore();
   const [formData, setFormData] = useState({
     id: 'MED-505',
     cargoType: 'Essential Medicines',
@@ -22,7 +20,7 @@ export function ManualDispatchForm() {
     e.preventDefault();
     createShipment({ ...formData, priority: formData.priority as any, status: 'Planned' });
     // Creation ends at Planned; Cargo Ready is an explicit next step.
-    router.push('/optimizer');
+    setView('optimizer');
   };
 
   return (

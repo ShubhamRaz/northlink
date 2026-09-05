@@ -11,12 +11,23 @@ import { JourneyIntelligencePanel } from '@/features/journey/JourneyIntelligence
 const Map = dynamic(() => import('@/features/command-center/MapComponent'), { ssr: false });
 
 export function OptimizerView() {
-  const { shipments, activeRoutes, analyzeRoutesForReadyShipment, markCargoReady, decisionHistory, approveInitialRoute, overrideInitialRoute, selectShipment, analyzeJourney, dispatchCargo, routeRecommendations, decideMidJourneyRoute } = useAppStore();
+  const { shipments, activeRoutes, analyzeRoutesForReadyShipment, markCargoReady, decisionHistory, approveInitialRoute, overrideInitialRoute, selectShipment, analyzeJourney, dispatchCargo, routeRecommendations, decideMidJourneyRoute, selectedShipmentId } = useAppStore();
   const [overrideReason, setOverrideReason] = useState('');
   const [showOverride, setShowOverride] = useState(false);
   const [activeTab, setActiveTab] = useState<'routes' | 'journey'>('journey');
 
-  const [selectedShipment, setSelectedShipment] = useState('MED-204');
+  // Initialize from the store's selected shipment (set by createShipment or priority list clicks),
+  // falling back to the first available shipment.
+  const [selectedShipment, setSelectedShipment] = useState(
+    selectedShipmentId || shipments[0]?.id || 'MED-204'
+  );
+
+  // Keep local selection in sync if the store selection changes (e.g. after Add Cargo)
+  useEffect(() => {
+    if (selectedShipmentId && selectedShipmentId !== selectedShipment) {
+      queueMicrotask(() => setSelectedShipment(selectedShipmentId));
+    }
+  }, [selectedShipmentId, selectedShipment]);
 
   useEffect(() => {
     if (selectedShipment) {
