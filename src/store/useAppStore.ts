@@ -350,7 +350,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     const shipment = state.shipments.find(s => s.id === shipmentId);
     if (!shipment || shipment.status !== 'Ready') return;
 
-    const alternatives = (await generateRoutesAsync(shipment, state.incidents, state.simulationMode));
+    const actualStart = shipment.cargoReadyAt
+      ? new Date(shipment.cargoReadyAt).toTimeString().slice(0, 5)
+      : shipment.scheduledTime ?? shipment.startTime ?? '10:00';
+
+    const alternatives = (await generateRoutesAsync(shipment, state.incidents, state.simulationMode, undefined, undefined, actualStart));
     const bestRoute = alternatives.find(a => a.isFeasible);
     
     if (bestRoute) {
@@ -359,9 +363,6 @@ export const useAppStore = create<AppState>((set, get) => ({
         message: `Route analysis completed for ${shipment.id}. Recommended: ${bestRoute.name}. Pending Dispatcher Decision.`,
         type: 'info'
       });
-      const actualStart = shipment.cargoReadyAt
-        ? new Date(shipment.cargoReadyAt).toTimeString().slice(0, 5)
-        : shipment.scheduledTime ?? shipment.startTime ?? '10:00';
       await state.analyzeJourney(shipmentId, actualStart, bestRoute.id, bestRoute.coordinates, bestRoute.currentEta);
     } else {
       set({ activeRoutes: alternatives });

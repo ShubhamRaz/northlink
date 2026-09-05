@@ -180,6 +180,10 @@ function buildSegments(
     const delay = computeExpectedDelay(prob, terrainRisk);
     const accessibility = computeAccessibility(prob);
 
+    // TIME-AWARE TRAFFIC PROPAGATION: Add expected delay to cumulative travel time
+    // so downstream segments arrive later and get the correct future weather.
+    cumulativeMinutes += delay;
+
     const elapsed = segmentStartMinutes; // minutes traveled before reaching this segment
     const isCompleted = vehicleProgressMinutes > cumulativeMinutes;
     const isActive = !isCompleted && vehicleProgressMinutes >= elapsed;
@@ -361,6 +365,42 @@ export const journeyService = {
       maxProbability: maxSeg?.disruptionProbability ?? 0,
       totalExpectedDelay: segments.reduce((s, seg) => s + seg.expectedDelay, 0),
       worstLocation: maxSeg?.location ?? 'N/A'
+    };
+  },
+
+  /**
+   * Deterministically evaluates a route's future risk by slicing it into temporal segments,
+   * calculating the exact arrival time at each segment, looking up the forecast for that
+   * specific future hour, and propagating any delays downstream.
+   */
+  evaluateRouteTimeAware(
+    routeCoordinates: [number, number][],
+    routeDurationMinutes: number,
+    startTime: string,
+    simulationMode: SimulationMode,
+    incidents: Incident[]
+  ): {
+    baseTravelMinutes: number;
+    totalExpectedDelay: number;
+    maxRiskProb: number;
+    hasDirectBlockage: boolean;
+  } {
+    // We pass a generic routeId 'EVAL' since we just want the metrics
+    const waypoints = buildGeometryWaypoints(routeCoordinates, routeDurationMinutes, 'EVAL');
+    
+    // This internally computes expected arrival time per segment and propagates delays!
+    const segments = buildSegments(waypoints, 'EVAL', startTime, simulationMode, incidents, 0);
+
+    const baseTravelMinutes = segments.reduce((sum, s) => sum + s.estimatedTravelMinutes, 0);
+    const totalExpectedDelay = segments.reduce((sum, s) => sum + s.expectedDelay, 0);
+    const maxRiskProb = segments.reduce((max, s) => Math.max(max, s.disruptionProbability), 0);
+    const hasDirectBlockage = segments.some(s => s.accessibility === 'BLOCKED');
+
+    return {
+      baseTravelMinutes,
+      totalExpectedDelay,
+      maxRiskProb,
+      hasDirectBlockage
     };
   }
 };

@@ -57,6 +57,18 @@
   - Fix: Slicing deleted. The newly generated geometries from OSRM are assigned directly to the vehicle.
   - Verify: `vehicle.currentRouteGeometry` accepts the raw unadulterated route output, `progress` reset to 0.
 ## Phase 4 — Time-Aware Intelligence
+- [x] Integrate time-aware route weather
+  - Problem: Route logic evaluated the whole route using current-time static weather.
+  - Fix: Sliced routes into segments, assigned expected arrival times to each segment, and fetched future weather specifically for that hour.
+  - Verify: Weather forecast on `RouteSegment` dynamically changes based on arrival hour.
+- [x] Forward traffic propagation
+  - Problem: If Segment 1 delayed the vehicle by 45 mins, Segment 2's expected arrival time wasn't pushed back.
+  - Fix: Added `delay` to `cumulativeMinutes` during segment building.
+  - Verify: Downstream segment arrival times correctly reflect upstream delays.
+- [x] Deterministic time-aware score
+  - Problem: `priorityScore` was generated from naive `distance` and static `simulationMode` overrides.
+  - Fix: Route scoring calls `evaluateRouteTimeAware` which calculates a time-aware `maxRiskProb` and `totalExpectedDelay`, yielding a deterministic score: `totalETA + (maxRisk * 3) - resilience/100`.
+  - Verify: Slower but safer routes can now successfully out-score faster but extreme-weather routes.
 ## Phase 5 — Incident and Safety
 ## Phase 6 — State Management
 ## Phase 7 — Simulation and ETA

@@ -3,6 +3,7 @@ import { predictCorridorRisk } from './riskService';
 import { determineAccessibility } from './accessibilityService';
 import { calculateResilience } from './resilienceService';
 import { routeProvider, RouteGeometry } from './routeProvider';
+import { journeyService } from './journeyService';
 
 export const LOCATION_COORDINATES: Record<string, [number, number]> = {
   'Guwahati Logistics Hub': [26.1445, 91.7362],
@@ -41,44 +42,27 @@ function buildGeometryRoute(
   index: number,
   incidents: Incident[],
   simulationMode: SimulationMode,
-  sourceLabel: 'OSRM' | 'PROTOTYPE FALLBACK'
+  sourceLabel: 'OSRM' | 'PROTOTYPE FALLBACK',
+  startTime: string
 ): RouteAlternative {
   const distance = geometry.distance / 1000;
   const baseEta = Math.max(1, Math.round(geometry.duration / 60));
-  const trafficDelay = simulationMode === 'TRAFFIC SURGE' ? Math.round(baseEta * 0.25) : 0;
 
-  // Distance-weighted incident risk: incidents directly ON the route (<=10km) have full impact,
-  // incidents 10-50km away have reduced impact (scaled by distance).
-  // Only routes with an incident directly ON them (<=10km) can be BLOCKED.
-  const relevantIncidents = incidents.filter(incident =>
-    incident.verificationStatus === 'VERIFIED' && incident.resolutionStatus === 'UNRESOLVED' &&
-    nearestDistanceKm(incident.coordinates, geometry.coordinates) <= 50
+  // TIME-AWARE EVALUATION
+  // Slices the route into segments, evaluates each at its exact future arrival time,
+  // and propagates traffic delays forward.
+  const evaluation = journeyService.evaluateRouteTimeAware(
+    geometry.coordinates,
+    baseEta,
+    startTime,
+    simulationMode,
+    incidents
   );
-  const incidentRisk = Math.min(0.85, relevantIncidents.reduce((sum, incident) => {
-    const distToRoute = nearestDistanceKm(incident.coordinates, geometry.coordinates);
-    // Distance scaling: 1.0 at 0km, 0.5 at 10km, 0.1 at 50km
-    const distanceFactor = Math.max(0.1, 1 - (distToRoute / 50));
-    let baseContribution = 0;
-    if (incident.type === 'Landslide' || incident.type === 'Road Blockage' || incident.type === 'Bridge Damage') baseContribution = 0.45;
-    else if (incident.type === 'Traffic' || incident.type === 'Heavy Rain') baseContribution = 0.2;
-    else baseContribution = 0.1;
-    // Critical severity doubles the contribution
-    if (incident.severity === 'Critical') baseContribution *= 1.3;
-    return sum + (baseContribution * distanceFactor);
-  }, 0));
 
-  const weatherRisk = simulationMode === 'HEAVY RAIN' ? 0.3 : simulationMode === 'LANDSLIDE' ? 0.25 : 0;
-  const probability = Math.min(0.99, 0.08 + weatherRisk + incidentRisk + (distance > 300 ? 0.08 : 0));
-  const expectedDelay = trafficDelay + (probability >= 0.75 ? 120 : probability >= 0.5 ? 45 : probability >= 0.3 ? 15 : 0);
+  const probability = evaluation.maxRiskProb;
+  const expectedDelay = evaluation.totalExpectedDelay;
+  const accessibility = evaluation.hasDirectBlockage ? 'BLOCKED' : probability >= 0.5 ? 'RESTRICTED' : 'OPEN';
 
-  // A route is only BLOCKED if a critical hard-blockage incident (landslide/road blockage/bridge damage)
-  // is directly ON the route (within 10km). Otherwise it's RESTRICTED (passable but risky).
-  const hasDirectBlockage = relevantIncidents.some(inc =>
-    (inc.type === 'Landslide' || inc.type === 'Road Blockage' || inc.type === 'Bridge Damage') &&
-    inc.severity === 'Critical' &&
-    nearestDistanceKm(inc.coordinates, geometry.coordinates) <= 10
-  );
-  const accessibility = hasDirectBlockage ? 'BLOCKED' : probability >= 0.5 ? 'RESTRICTED' : 'OPEN';
   const corridor: Corridor = {
     id: `OSRM-${shipment.id}-${index + 1}`,
     name: `${sourceLabel} route ${index + 1}`,
@@ -90,27 +74,38 @@ function buildGeometryRoute(
     coordinates: geometry.coordinates,
     baseTravelTime: baseEta
   };
+  
   const riskScores: Record<string, number> = { [corridor.id]: probability };
   const feasible = accessibility !== 'BLOCKED';
+  const resilience = calculateResilience([corridor], riskScores);
+  
   const reasons = [
     `${sourceLabel} road geometry: ${Math.round(distance)} km`,
-    trafficDelay > 0 ? `Traffic surge adds ${trafficDelay} minutes.` : 'Traffic impact included in forecast.',
-    relevantIncidents.length > 0 ? `${relevantIncidents.length} verified unresolved incident(s) near this route.` : 'No verified unresolved incidents near this route.'
+    expectedDelay > 0 ? `Time-aware forecast predicts ${expectedDelay} minutes of delay.` : 'Time-aware forecast indicates clear conditions.',
+    evaluation.hasDirectBlockage ? 'Route is blocked by an active critical incident.' : 'No hard blocks detected on this route.'
   ];
+
+  // DETERMINISTIC ROUTE SCORE
+  // Formula: (Total Journey Hours) + (Max Risk * 3) - (Resilience / 100)
+  // A resilient route (high resilience score) lowers the penalty.
+  // A risky route (high maxRiskProb) adds a heavy penalty.
+  const totalJourneyMinutes = baseEta + expectedDelay;
+  const priorityScore = feasible ? (totalJourneyMinutes / 60) + (probability * 3) - (resilience / 100) : 999999;
+
   return {
     id: `RT-OSRM-${index + 1}`,
     name: `${sourceLabel === 'OSRM' ? 'Road alternative' : 'Prototype fallback'} ${index + 1}`,
     corridorIds: [corridor.id],
     distance: Math.round(distance),
     baseEta,
-    currentEta: baseEta + expectedDelay,
+    currentEta: totalJourneyMinutes,
     uncertaintyRange: Math.round(expectedDelay * 0.3),
     cost: Math.round(distance * 4.2 + distance * 0.8 + expectedDelay * 6),
     risk: Math.round(probability * 100),
-    resilience: calculateResilience([corridor], riskScores),
+    resilience,
     status: feasible ? (probability >= 0.5 ? 'RESTRICTED' : 'FEASIBLE') : 'BLOCKED',
     isFeasible: feasible,
-    priorityScore: feasible ? (baseEta / 60) + probability * 3 - calculateResilience([corridor], riskScores) / 100 : 999999,
+    priorityScore,
     reasons,
     coordinates: geometry.coordinates
   };
@@ -121,7 +116,8 @@ export async function generateRoutesAsync(
   incidents: Incident[],
   simulationMode: SimulationMode,
   originOverride?: [number, number],
-  destinationOverride?: [number, number]
+  destinationOverride?: [number, number],
+  startTime: string = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 ): Promise<RouteAlternative[]> {
   const origin = originOverride ?? resolveLocationCoordinates(shipment.origin);
   const destination = destinationOverride ?? resolveLocationCoordinates(shipment.destination);
@@ -133,7 +129,7 @@ export async function generateRoutesAsync(
     throw new Error(`Routing Error: No valid routes or fallbacks could be generated for ${shipment.id}`);
   }
   return alternatives.slice(0, 4)
-    .map((geometry, index) => buildGeometryRoute(shipment, geometry, index, incidents, simulationMode, geometry.source ?? 'PROTOTYPE FALLBACK'))
+    .map((geometry, index) => buildGeometryRoute(shipment, geometry, index, incidents, simulationMode, geometry.source ?? 'PROTOTYPE FALLBACK', startTime))
     .sort((a, b) => a.priorityScore - b.priorityScore);
 }
 
@@ -145,7 +141,8 @@ export async function reassessRemainingJourney(
   shipment: Shipment,
   currentVehiclePosition: [number, number],
   incidents: Incident[],
-  simulationMode: SimulationMode
+  simulationMode: SimulationMode,
+  currentTime: string = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 ): Promise<RouteAlternative[]> {
   const destination = resolveLocationCoordinates(shipment.destination);
   if (!destination) {
@@ -161,6 +158,7 @@ export async function reassessRemainingJourney(
     incidents,
     simulationMode,
     currentVehiclePosition, // True current GPS
-    destination
+    destination,
+    currentTime
   );
 }
