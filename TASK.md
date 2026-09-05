@@ -31,6 +31,18 @@
 - [?] NEEDS REVIEW
 
 ## Phase 2 — OSRM Routing
+- [x] Audit current routing implementation
+  - Problem: Legacy and fallback logic competed with OSRM engine.
+  - Fix: Removed `generateRoutes` and `getCandidatePaths`. `routeProvider.getAlternatives` is now authoritative.
+  - Verify: Searched and verified all callers now exclusively rely on `generateRoutesAsync` and `routeProvider`.
+- [x] Fix OSRM alternative handling
+  - Problem: `while (routes.length < 3)` caused infinite loops if fallback repeatedly generated the same identical route.
+  - Fix: Switched to deterministic uniqueness checks based on distance and midpoint instead of the first 5 coordinates. Bounded the fallback loop to exactly ONE prototype fallback when OSRM yields no paths.
+  - Verify: Loop bounded; deduplication is geometry-aware.
+- [x] Fallback routes & Coordinate validation
+  - Problem: Fallback paths mimicked OSRM data; missing coordinate sanity checks.
+  - Fix: Rejected coordinates outside valid bounds gracefully. Fallbacks are explicitly identified as `source: 'PROTOTYPE FALLBACK'`.
+  - Verify: App logic updated to handle 0 returned candidates by throwing a clean error in `generateRoutesAsync` instead of crashing.
 ## Phase 3 — Current-Position Rerouting
 ## Phase 4 — Time-Aware Intelligence
 ## Phase 5 — Incident and Safety

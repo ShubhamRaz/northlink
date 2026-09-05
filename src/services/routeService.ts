@@ -21,167 +21,6 @@ export function resolveLocationCoordinates(location: string): [number, number] |
   return LOCATION_COORDINATES[location] ?? null;
 }
 
-// In a real system, this would query a routing engine (e.g. pgRouting)
-// For the prototype, we have 2 main candidates for Guwahati -> Imphal
-const getCandidatePaths = (): { id: string; name: string; corridorIds: string[] }[] => [
-  { id: 'RT-FASTEST', name: 'Fastest (via Kohima)', corridorIds: ['C01', 'C02'] },
-  { id: 'RT-ALT-1', name: 'Alternative (via Silchar)', corridorIds: ['C01', 'C03'] }
-];
-
-function distanceKm(coords: [number, number][]): number {
-  let total = 0;
-  for (let index = 1; index < coords.length; index += 1) {
-    const [lat1, lon1] = coords[index - 1];
-    const [lat2, lon2] = coords[index];
-    const dLat = (lat2 - lat1) * Math.PI / 180;
-    const dLon = (lon2 - lon1) * Math.PI / 180;
-    const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
-    total += 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  }
-  return Math.round(total);
-}
-
-export const generateRoutes = (
-  shipment: Shipment,
-  corridors: Corridor[],
-  incidents: Incident[],
-  simulationMode: SimulationMode,
-  completedCorridorIds: string[] = []
-): RouteAlternative[] => {
-  
-  const candidates = getCandidatePaths();
-  const alternatives: RouteAlternative[] = [];
-
-  // Map to hold calculated risk for the resilience engine later
-  const riskScores: Record<string, number> = {};
-
-  for (const candidate of candidates) {
-    const routeCorridors = candidate.corridorIds.map(id => corridors.find(c => c.id === id)).filter(Boolean) as Corridor[];
-    
-    if (routeCorridors.length === 0) continue;
-
-    let baseEta = 0;
-    let totalDelay = 0;
-    let maxRiskProb = 0;
-    let isFeasible = true;
-    const reasons: string[] = [];
-
-    // Evaluate each corridor in the route
-    for (const corridor of routeCorridors) {
-      baseEta += corridor.baseTravelTime;
-
-      // If already completed, skip risk/delay additions for it
-      if (completedCorridorIds.includes(corridor.id)) {
-        continue;
-      }
-
-      // AI Prediction
-      const prediction = predictCorridorRisk(corridor, incidents, simulationMode);
-      riskScores[corridor.id] = prediction.probability;
-      totalDelay += prediction.expectedDelay;
-
-      if (prediction.probability > maxRiskProb) {
-        maxRiskProb = prediction.probability;
-      }
-
-      // Accessibility Rules
-      const accessibility = determineAccessibility(corridor, prediction, incidents);
-      
-      // Hard Constraints
-      if (accessibility === 'BLOCKED') {
-        isFeasible = false;
-        reasons.push(`${corridor.name} is BLOCKED.`);
-      } else if (accessibility === 'RESTRICTED') {
-        reasons.push(`${corridor.name} is RESTRICTED (Expect severe delays).`);
-      }
-    }
-
-    // Build Route Alternative
-    const currentEta = baseEta + totalDelay;
-    const riskPercent = Math.round(maxRiskProb * 100);
-    const rri = calculateResilience(routeCorridors, riskScores);
-    const coordinates = routeCorridors.flatMap(c => c.coordinates);
-    const distance = distanceKm(coordinates);
-    const fuelEstimate = Math.round(distance * 4.2);
-    const tollEstimate = Math.round(distance * 0.8);
-    const operationalEstimate = Math.round(totalDelay * 6);
-    const cost = fuelEstimate + tollEstimate + operationalEstimate;
-
-    let status: RouteAlternative['status'] = 'FEASIBLE';
-    if (!isFeasible) status = 'BLOCKED';
-    else if (maxRiskProb >= 0.5) status = 'RESTRICTED';
-
-    alternatives.push({
-      id: candidate.id,
-      name: candidate.name,
-      corridorIds: candidate.corridorIds,
-      distance,
-      baseEta,
-      currentEta,
-      uncertaintyRange: Math.round(totalDelay * 0.3),
-      cost,
-      risk: riskPercent,
-      resilience: rri,
-      status,
-      isFeasible,
-      priorityScore: 0, // Calculated below
-      reasons,
-      coordinates
-    });
-  }
-
-  // Multi-Objective Scoring
-  // Score = wETA*ETA + wRisk*Risk + wCost*Cost - wResilience*RRI
-  // We want to MINIMIZE the score.
-  
-  // Weights based on priority
-  let wETA = 1, wRisk = 1, wCost = 1, wResilience = 1;
-  if (shipment.priority === 'Critical') {
-    wETA = 2.0;
-    wRisk = 3.0; // Avoid risk at all costs
-    wCost = 0.1; // Cost doesn't matter
-    wResilience = 2.0;
-  } else if (shipment.priority === 'High') {
-    wETA = 1.5;
-    wRisk = 1.5;
-    wCost = 0.5;
-    wResilience = 1.2;
-  }
-
-  // Find max values for normalization
-  const maxEta = Math.max(...alternatives.map(a => a.currentEta), 1);
-  const maxCost = Math.max(...alternatives.map(a => a.cost), 1);
-
-  alternatives.forEach(alt => {
-    if (!alt.isFeasible) {
-      alt.priorityScore = 999999; // Deprioritize completely
-      return;
-    }
-
-    const normEta = alt.currentEta / maxEta;
-    const normCost = alt.cost / maxCost;
-    const normRisk = alt.risk / 100;
-    const normRes = alt.resilience / 100;
-
-    // Lower is better
-    alt.priorityScore = (wETA * normEta) + (wRisk * normRisk) + (wCost * normCost) - (wResilience * normRes);
-  });
-
-  // Sort by best score (lowest)
-  alternatives.sort((a, b) => a.priorityScore - b.priorityScore);
-
-  // Assign explanations to the top route
-  const bestRoute = alternatives.find(a => a.isFeasible);
-  if (bestRoute) {
-    if (bestRoute.risk > 40) {
-      bestRoute.reasons.push('Selected despite moderate risk due to lack of feasible alternatives.');
-    } else {
-      bestRoute.reasons.push('Provides the best balance of speed, low risk, and high resilience.');
-    }
-  }
-
-  return alternatives;
-};
 
 function haversineKm(a: [number, number], b: [number, number]): number {
   const dLat = (b[0] - a[0]) * Math.PI / 180;
@@ -286,8 +125,13 @@ export async function generateRoutesAsync(
 ): Promise<RouteAlternative[]> {
   const origin = originOverride ?? resolveLocationCoordinates(shipment.origin);
   const destination = destinationOverride ?? resolveLocationCoordinates(shipment.destination);
-  if (!origin || !destination) return [];
+  if (!origin || !destination) {
+    throw new Error(`Routing Error: Invalid origin or destination coordinates for shipment ${shipment.id}`);
+  }
   const alternatives = await routeProvider.getAlternatives(origin, destination);
+  if (!alternatives || alternatives.length === 0) {
+    throw new Error(`Routing Error: No valid routes or fallbacks could be generated for ${shipment.id}`);
+  }
   return alternatives.slice(0, 4)
     .map((geometry, index) => buildGeometryRoute(shipment, geometry, index, incidents, simulationMode, geometry.source ?? 'PROTOTYPE FALLBACK'))
     .sort((a, b) => a.priorityScore - b.priorityScore);

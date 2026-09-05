@@ -48,12 +48,23 @@ function haversineKm(a: [number, number], b: [number, number]): number {
   return 6371 * 2 * Math.atan2(Math.sqrt(value), Math.sqrt(1 - value));
 }
 
+function isValidCoordinate(coord: [number, number]): boolean {
+  const [lat, lng] = coord;
+  return lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
+}
+
 // In-memory cache of OSRM routes to avoid redundant API calls.
 // Key: "lat1,lng1;lat2,lng2[;lat3,lng3...]"
 const routeCache = new Map<string, RouteGeometry | null>();
 
 // Helper: fetch an OSRM route between points with a 10-second timeout.
 async function fetchOsrm(points: [number, number][]): Promise<RouteGeometry | null> {
+  if (!points.every(isValidCoordinate)) {
+    console.error('Invalid coordinates passed to fetchOsrm:', points);
+    return null;
+  }
+
+  // OSRM expects lng,lat
   const coordStr = points.map(p => `${p[1]},${p[0]}`).join(';');
 
   // Check cache first
@@ -70,25 +81,40 @@ async function fetchOsrm(points: [number, number][]): Promise<RouteGeometry | nu
       signal: controller.signal
     });
     clearTimeout(timeoutId);
+    
     if (!response.ok) {
       routeCache.set(coordStr, null);
       return null;
     }
+    
     const data = await response.json() as OsrmResponse;
     if (data.code !== 'Ok' || !data.routes || data.routes.length === 0) {
       routeCache.set(coordStr, null);
       return null;
     }
+    
     const route = data.routes[0];
+    if (!route.geometry || !Array.isArray(route.geometry.coordinates) || route.geometry.coordinates.length < 2) {
+      routeCache.set(coordStr, null);
+      return null;
+    }
+
+    if (typeof route.distance !== 'number' || typeof route.duration !== 'number') {
+      routeCache.set(coordStr, null);
+      return null;
+    }
+
     const result: RouteGeometry = {
+      // OSRM returns [lng, lat], we map back to [lat, lng]
       coordinates: route.geometry.coordinates.map((c: number[]) => [c[1], c[0]] as [number, number]),
       distance: route.distance,
       duration: route.duration,
       source: 'OSRM'
     };
+    
     routeCache.set(coordStr, result);
     return result;
-  } catch {
+  } catch (error) {
     routeCache.set(coordStr, null);
     return null;
   }
@@ -116,14 +142,31 @@ function straightLineGeometry(origin: [number, number], destination: [number, nu
   };
 }
 
+function isDuplicateRoute(r1: RouteGeometry, r2: RouteGeometry): boolean {
+  // If the total distance varies by more than 5%, they are likely different routes
+  if (Math.abs(r1.distance - r2.distance) > r1.distance * 0.05) {
+    return false;
+  }
+
+  // Compare midpoint distance as a heuristic for route geometry
+  const mid1 = r1.coordinates[Math.floor(r1.coordinates.length / 2)];
+  const mid2 = r2.coordinates[Math.floor(r2.coordinates.length / 2)];
+  const midDist = haversineKm(mid1, mid2);
+  
+  return midDist < 5; // within 5km at the midpoint and similar length -> duplicate
+}
+
 export const routeProvider = {
   /**
-   * Fetches the route from OSRM, or falls back to a straight line.
+   * Fetches the route from OSRM, or throws an error if coordinates are invalid.
    */
   async getRoute(
     origin: [number, number],
     destination: [number, number]
   ): Promise<RouteGeometry> {
+    if (!isValidCoordinate(origin) || !isValidCoordinate(destination)) {
+      throw new Error('Invalid routing coordinates provided');
+    }
     const route = await fetchOsrm([origin, destination]);
     if (route) return route;
     console.warn('OSRM routing failed, using straight-line fallback');
@@ -131,24 +174,25 @@ export const routeProvider = {
   },
 
   /**
-   * Returns 3 alternative routes, ALL following real roads via OSRM.
+   * Returns alternative routes, ALL following real roads via OSRM.
    * Strategy:
-   *   1. Direct OSRM route (with alternatives=true)
+   *   1. Direct OSRM route
    *   2. OSRM route via a northern town
    *   3. OSRM route via a southern town
-   * If OSRM is unreachable, falls back to straight lines.
+   * If OSRM is unreachable, falls back to ONE straight line prototype.
    */
   async getAlternatives(
     origin: [number, number],
     destination: [number, number]
   ): Promise<RouteGeometry[]> {
+    if (!isValidCoordinate(origin) || !isValidCoordinate(destination)) {
+      return [];
+    }
+
     const routes: RouteGeometry[] = [];
-    const seen = new Set<string>();
 
     const addRoute = (r: RouteGeometry) => {
-      const key = r.coordinates.slice(0, 5).map(c => c.join(',')).join('|');
-      if (!seen.has(key)) {
-        seen.add(key);
+      if (!routes.some(existing => isDuplicateRoute(existing, r))) {
         routes.push(r);
       }
     };
@@ -180,15 +224,15 @@ export const routeProvider = {
     const viaPromises = selectedTowns.map(town => fetchOsrm([origin, town.coords, destination]));
     const viaResults = await Promise.all(viaPromises);
     for (const viaRoute of viaResults) {
-      if (routes.length >= 3) break;
+      if (routes.length >= 4) break; // target up to 4 candidates
       if (viaRoute) addRoute(viaRoute);
     }
 
-    // ── Fallback: if OSRM returned fewer than 3 routes, add straight lines ──
-    while (routes.length < 3) {
+    // ── Fallback: if OSRM returned NO routes, add exactly ONE straight line fallback ──
+    if (routes.length === 0) {
       addRoute({ ...straightLineGeometry(origin, destination), source: 'PROTOTYPE FALLBACK' as const });
     }
 
-    return routes.slice(0, 3);
+    return routes.slice(0, 4);
   }
 };
