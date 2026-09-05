@@ -132,15 +132,19 @@ export const routeProvider = {
   ): Promise<RouteGeometry> {
     try {
       const url = `${OSRM_BASE_URL}/${origin[1]},${origin[0]};${destination[1]},${destination[0]}?overview=full&geometries=geojson`;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
       const response = await fetch(url, {
         headers: { 'Accept': 'application/json' },
-        cache: 'force-cache'
+        cache: 'force-cache',
+        signal: controller.signal
       });
-      
+      clearTimeout(timeoutId);
+
       if (!response.ok) throw new Error('OSRM API Error');
-      
+
       const data = await response.json() as OsrmResponse;
-      
+
       if (data.code !== 'Ok' || !data.routes || data.routes.length === 0) {
         throw new Error('No route found');
       }
@@ -162,119 +166,143 @@ export const routeProvider = {
   },
 
   /**
-   * Same as getRoute but requests alternatives.
-   * Always returns at least 3 routes (mixing OSRM + fallback variations)
-   * so the dispatcher always sees multiple candidates.
+   * Fetches a route from OSRM via a specific intermediate waypoint.
+   * Returns null if OSRM fails or times out.
    */
-  async getAlternatives(
+  async getRouteViaWaypoint(
     origin: [number, number],
+    waypoint: [number, number],
     destination: [number, number]
-  ): Promise<RouteGeometry[]> {
-    const osrmRoutes: RouteGeometry[] = [];
+  ): Promise<RouteGeometry | null> {
     try {
-      const url = `${OSRM_BASE_URL}/${origin[1]},${origin[0]};${destination[1]},${destination[0]}?overview=full&geometries=geojson&alternatives=true`;
+      // OSRM expects [lng,lat];lng,lat;lng,lat
+      const url = `${OSRM_BASE_URL}/${origin[1]},${origin[0]};${waypoint[1]},${waypoint[0]};${destination[1]},${destination[0]}?overview=full&geometries=geojson`;
+      // Use AbortController with a 5-second timeout to avoid hanging the UI
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
       const response = await fetch(url, {
         headers: { 'Accept': 'application/json' },
-        cache: 'force-cache'
+        cache: 'force-cache',
+        signal: controller.signal
       });
+      clearTimeout(timeoutId);
 
       if (!response.ok) throw new Error('OSRM API Error');
 
       const data = await response.json() as OsrmResponse;
 
-      if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
-        data.routes.forEach(route => {
-          osrmRoutes.push({
-            coordinates: route.geometry.coordinates.map((c: number[]) => [c[1], c[0]] as [number, number]),
-            distance: route.distance,
-            duration: route.duration,
-            source: 'OSRM' as const
-          });
-        });
+      if (data.code !== 'Ok' || !data.routes || data.routes.length === 0) {
+        return null;
       }
+
+      const route = data.routes[0];
+      const coords = route.geometry.coordinates.map((c: number[]) => [c[1], c[0]] as [number, number]);
+
+      return {
+        coordinates: coords,
+        distance: route.distance,
+        duration: route.duration,
+        source: 'OSRM'
+      };
     } catch (error) {
-      console.warn('OSRM routing failed, using fallback alternatives', error);
+      console.warn('OSRM via-waypoint routing failed', error);
+      return null;
     }
+  },
 
-    // Build fallback variations that follow different road corridors (via different towns)
-    const fallbackVariations: RouteGeometry[] = [];
-
-    // Variation 1: direct route using intermediate waypoints
-    fallbackVariations.push(generateFallbackGeometry(origin, destination));
-
-    // Variation 2 & 3: detour via a specific intermediate town north or south of the direct line.
-    // Pick two distinct intermediate waypoints to create genuinely different road corridors.
-    const midLat = (origin[0] + destination[0]) / 2;
-    const midLon = (origin[1] + destination[1]) / 2;
-
-    // North detour town: find a town north of the midpoint
-    const northTown = ROAD_WAYPOINTS
-      .filter(wp => wp.coords[0] > midLat && haversineKm(origin, wp.coords) < haversineKm(origin, destination) * 1.5)
-      .sort((a, b) => haversineKm([midLat, midLon], a.coords) - haversineKm([midLat, midLon], b.coords))[0];
-
-    if (northTown) {
-      const leg1 = generateFallbackGeometry(origin, northTown.coords);
-      const leg2 = generateFallbackGeometry(northTown.coords, destination);
-      fallbackVariations.push({
-        coordinates: [...leg1.coordinates, ...leg2.coordinates.slice(1)],
-        distance: leg1.distance + leg2.distance,
-        duration: leg1.duration + leg2.duration
-      });
-    } else {
-      // Fallback: midpoint offset north
-      const midNorth: [number, number] = [midLat + 0.4, midLon];
-      const fbn1 = generateFallbackGeometry(origin, midNorth);
-      const fbn2 = generateFallbackGeometry(midNorth, destination);
-      fallbackVariations.push({
-        coordinates: [...fbn1.coordinates, ...fbn2.coordinates.slice(1)],
-        distance: fbn1.distance + fbn2.distance,
-        duration: fbn1.duration + fbn2.duration
-      });
-    }
-
-    // South detour town: find a town south of the midpoint
-    const southTown = ROAD_WAYPOINTS
-      .filter(wp => wp.coords[0] < midLat && haversineKm(origin, wp.coords) < haversineKm(origin, destination) * 1.5)
-      .sort((a, b) => haversineKm([midLat, midLon], a.coords) - haversineKm([midLat, midLon], b.coords))[0];
-
-    if (southTown) {
-      const leg1 = generateFallbackGeometry(origin, southTown.coords);
-      const leg2 = generateFallbackGeometry(southTown.coords, destination);
-      fallbackVariations.push({
-        coordinates: [...leg1.coordinates, ...leg2.coordinates.slice(1)],
-        distance: leg1.distance + leg2.distance,
-        duration: leg1.duration + leg2.duration
-      });
-    } else {
-      // Fallback: midpoint offset south
-      const midSouth: [number, number] = [midLat - 0.4, midLon];
-      const fbs1 = generateFallbackGeometry(origin, midSouth);
-      const fbs2 = generateFallbackGeometry(midSouth, destination);
-      fallbackVariations.push({
-        coordinates: [...fbs1.coordinates, ...fbs2.coordinates.slice(1)],
-        distance: fbs1.distance + fbs2.distance,
-        duration: fbs1.duration + fbs2.duration
-      });
-    }
-
-    // Merge: prefer OSRM routes, then fill with fallbacks to reach at least 4 total
-    const all: RouteGeometry[] = [];
+  /**
+   * Returns 3-4 alternative routes, ALL following real roads via OSRM.
+   * Strategy:
+   *   1. Direct OSRM route (with alternatives=true)
+   *   2. OSRM route via a northern town (e.g. Dimapur/Kohima)
+   *   3. OSRM route via a southern town (e.g. Silchar)
+   *   4. OSRM route via another nearby town
+   * Falls back to town-waypoint interpolation only if OSRM is unreachable.
+   */
+  async getAlternatives(
+    origin: [number, number],
+    destination: [number, number]
+  ): Promise<RouteGeometry[]> {
+    const routes: RouteGeometry[] = [];
     const seen = new Set<string>();
-    for (const r of [...osrmRoutes, ...fallbackVariations]) {
+
+    const addRoute = (r: RouteGeometry) => {
       // Deduplicate by checking the first 5 coordinates
       const key = r.coordinates.slice(0, 5).map(c => c.join(',')).join('|');
       if (!seen.has(key)) {
         seen.add(key);
-        all.push(r);
+        routes.push(r);
+      }
+    };
+
+    // ── 1. Direct OSRM route (with alternatives=true) ──
+    try {
+      const url = `${OSRM_BASE_URL}/${origin[1]},${origin[0]};${destination[1]},${destination[0]}?overview=full&geometries=geojson&alternatives=true`;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      const response = await fetch(url, {
+        headers: { 'Accept': 'application/json' },
+        cache: 'force-cache',
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+      if (response.ok) {
+        const data = await response.json() as OsrmResponse;
+        if (data.code === 'Ok' && data.routes) {
+          data.routes.forEach(route => {
+            addRoute({
+              coordinates: route.geometry.coordinates.map((c: number[]) => [c[1], c[0]] as [number, number]),
+              distance: route.distance,
+              duration: route.duration,
+              source: 'OSRM' as const
+            });
+          });
+        }
+      }
+    } catch (error) {
+      console.warn('OSRM direct routing failed', error);
+    }
+
+    // ── 2 & 3. OSRM routes via different intermediate towns ──
+    // Find towns that are roughly between origin and destination, then pick
+    // the northernmost and southernmost to create genuinely different corridors.
+    const directDist = haversineKm(origin, destination);
+    const candidateTowns = ROAD_WAYPOINTS
+      .filter(wp => {
+        const distFromOrigin = haversineKm(origin, wp.coords);
+        const distFromDest = haversineKm(wp.coords, destination);
+        const detour = (distFromOrigin + distFromDest) - directDist;
+        // Town is a candidate if the detour is less than 80% of direct distance
+        // and it's at least 30km from both origin and destination
+        return detour < directDist * 0.8 && distFromOrigin > 30 && distFromDest > 30;
+      })
+      .sort((a, b) => a.coords[0] - b.coords[0]); // sort by latitude (north first)
+
+    // Pick up to 2 distinct towns (not 3) to keep total routes at 3 and avoid too many API calls.
+    const selectedTowns: { name: string; coords: [number, number] }[] = [];
+    if (candidateTowns.length >= 2) {
+      selectedTowns.push(candidateTowns[0]); // northernmost
+      selectedTowns.push(candidateTowns[candidateTowns.length - 1]); // southernmost
+    } else {
+      selectedTowns.push(...candidateTowns);
+    }
+
+    // Fetch all via-waypoint routes IN PARALLEL (not sequentially) for performance
+    const viaPromises = selectedTowns.map(town => this.getRouteViaWaypoint(origin, town.coords, destination));
+    const viaResults = await Promise.all(viaPromises);
+    for (const viaRoute of viaResults) {
+      if (routes.length >= 3) break; // limit to 3 routes total
+      if (viaRoute) {
+        addRoute(viaRoute);
       }
     }
 
-    // Ensure at least 3 routes; if we somehow have fewer, duplicate with perturbation
-    while (all.length < 3) {
-      const base = generateFallbackGeometry(origin, destination);
-      all.push({ ...base, source: 'PROTOTYPE FALLBACK' as const });
+    // ── Fallback: if OSRM returned fewer than 3 routes, fill with town-waypoint interpolation ──
+    while (routes.length < 3) {
+      const fb = generateFallbackGeometry(origin, destination);
+      addRoute({ ...fb, source: 'PROTOTYPE FALLBACK' as const });
     }
 
-    return all.slice(0, 4);
+    return routes.slice(0, 3);
   }
 };

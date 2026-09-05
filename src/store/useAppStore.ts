@@ -542,17 +542,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       // Include shipments that are in transit OR were auto-paused by the safety system
       if (s.status !== 'In Transit' && s.status !== 'Route Change Pending' && s.status !== 'Paused for Safety') return false;
       const vehicle = state.vehicles.find(v => v.id === s.assignedVehicleId);
-      if (!vehicle || !vehicle.currentRouteId) {
-        console.log('[assessIncidentImpact] skipping', s.id, '- no vehicle or route. status:', s.status, 'vehicleId:', s.assignedVehicleId);
-        return false;
-      }
+      if (!vehicle || !vehicle.currentRouteId) return false;
       if (vehicle.currentRouteGeometry?.length) {
         const vehicleIndex = nearestRouteIndex(vehicle.coordinates, vehicle.currentRouteGeometry);
         const incidentIndex = nearestRouteIndex(incident.coordinates, vehicle.currentRouteGeometry);
         const distToRoute = haversineKm(incident.coordinates, vehicle.currentRouteGeometry[incidentIndex]);
-        const affected = incidentIndex > vehicleIndex && distToRoute <= 50;
-        console.log('[assessIncidentImpact]', s.id, 'vIdx:', vehicleIndex, 'iIdx:', incidentIndex, 'distKm:', distToRoute.toFixed(1), 'affected:', affected);
-        return affected;
+        return incidentIndex > vehicleIndex && distToRoute <= 50;
       }
       const activeRoute = state.activeRoutes.find(r => r.id === vehicle.currentRouteId);
       return Boolean(activeRoute?.corridorIds.includes(incident.affectedCorridorId ?? ''));
@@ -596,9 +591,12 @@ export const useAppStore = create<AppState>((set, get) => ({
           });
         }
 
-        // Generate alternatives
-        const alternatives = await generateRoutesAsync(shipment, get().incidents, state.simulationMode, vehicle.coordinates, destination);
-        const currentRouteAlt = state.activeRoutes.find(a => a.id === shipment.routeId);
+        // Use the EXISTING activeRoutes (already loaded with OSRM routes during
+        // the initial analysis) instead of calling generateRoutesAsync again.
+        // This avoids making 3 OSRM API calls during impact assessment, which
+        // was causing the browser to hang/time out.
+        const alternatives = state.activeRoutes;
+        const currentRouteAlt = alternatives.find(a => a.id === shipment.routeId);
         // Prefer feasible, otherwise pick the least-risky alternative so the dispatcher always sees options
         const bestRoute = alternatives.find(a => a.isFeasible && a.id !== shipment.routeId)
           || alternatives.slice().sort((a, b) => a.risk - b.risk)[0];
