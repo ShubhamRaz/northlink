@@ -591,11 +591,37 @@ export const useAppStore = create<AppState>((set, get) => ({
           });
         }
 
-        // Use the EXISTING activeRoutes (already loaded with OSRM routes during
-        // the initial analysis) instead of calling generateRoutesAsync again.
-        // This avoids making 3 OSRM API calls during impact assessment, which
-        // was causing the browser to hang/time out.
-        const alternatives = state.activeRoutes;
+        // Use the EXISTING activeRoutes for the FIRST incident detection.
+        // For subsequent incidents (after a reroute), regenerate routes from
+        // the vehicle's current position to the destination so the alternatives
+        // reflect the new route context. Use a 15-second timeout to avoid
+        // hanging the browser if OSRM is slow.
+        let alternatives: RouteAlternative[];
+        const hasPriorRec = state.routeRecommendations.some(r => r.shipmentId === shipment.id);
+        if (hasPriorRec && vehicle.coordinates) {
+          // Regenerate routes from current vehicle position with a timeout
+          try {
+            const destination = resolveLocationCoordinates(shipment.destination);
+            if (destination) {
+              // Race the OSRM call against a 15-second timeout
+              const routesPromise = generateRoutesAsync(shipment, get().incidents, state.simulationMode, vehicle.coordinates, destination);
+              const timeoutPromise = new Promise<RouteAlternative[]>((resolve) =>
+                setTimeout(() => resolve([]), 15000)
+              );
+              alternatives = await Promise.race([routesPromise, timeoutPromise]);
+              if (alternatives.length === 0) {
+                // Timeout — use existing routes
+                alternatives = state.activeRoutes;
+              }
+            } else {
+              alternatives = state.activeRoutes;
+            }
+          } catch {
+            alternatives = state.activeRoutes;
+          }
+        } else {
+          alternatives = state.activeRoutes;
+        }
         const currentRouteAlt = alternatives.find(a => a.id === shipment.routeId);
         // Prefer feasible OSRM routes, then feasible fallbacks, then least-risky overall.
         // This ensures the recommended route follows real roads when available.

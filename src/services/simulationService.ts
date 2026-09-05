@@ -70,15 +70,22 @@ class SimulationEngine {
 
       // ── AUTO-DETECT: check if any verified, unresolved incident is close
       // ahead on the current route and auto-trigger impact assessment.
-      // Only trigger if there's NO existing recommendation for this shipment
-      // (i.e., the dispatcher hasn't already decided to reroute or keep route).
-      const hasAnyRec = state.routeRecommendations.some(
-        r => r.shipmentId === shipment.id && (r.status === 'ACTIVE' || r.status === 'APPROVED' || r.status === 'REJECTED')
+      // Only trigger if there's NO ACTIVE recommendation for this shipment
+      // (APPROVED/REJECTED recommendations from previous incidents don't block
+      // detection of NEW incidents on the new route).
+      const hasPendingRec = state.routeRecommendations.some(
+        r => r.shipmentId === shipment.id && r.status === 'ACTIVE'
       );
-      if (!hasAnyRec && vehicle.currentRouteGeometry?.length && shipment.routeId) {
+      if (!hasPendingRec && vehicle.currentRouteGeometry?.length && shipment.routeId) {
+        // Find incidents that are ahead on the CURRENT route (not already-handled ones)
         const nearestIncident = state.incidents.find(inc => {
           if (inc.verificationStatus !== 'VERIFIED' || inc.resolutionStatus !== 'UNRESOLVED') return false;
-          // Check if incident is near the vehicle's route ahead
+          // Skip incidents that already have a recommendation for this shipment
+          const alreadyHandled = state.routeRecommendations.some(
+            r => r.incidentId === inc.id && r.shipmentId === shipment.id
+          );
+          if (alreadyHandled) return false;
+          // Check if incident is near the vehicle's current route ahead
           const dist = this.pointToRouteDistance(inc.coordinates, vehicle.currentRouteGeometry!);
           return dist <= 50;
         });

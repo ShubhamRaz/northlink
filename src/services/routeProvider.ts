@@ -48,39 +48,68 @@ function haversineKm(a: [number, number], b: [number, number]): number {
   return 6371 * 2 * Math.atan2(Math.sqrt(value), Math.sqrt(1 - value));
 }
 
-// Helper: fetch an OSRM route between two points with a timeout.
+// In-memory cache of OSRM routes to avoid redundant API calls.
+// Key: "lat1,lng1;lat2,lng2[;lat3,lng3...]"
+const routeCache = new Map<string, RouteGeometry | null>();
+
+// Helper: fetch an OSRM route between points with a 10-second timeout.
 async function fetchOsrm(points: [number, number][]): Promise<RouteGeometry | null> {
+  const coordStr = points.map(p => `${p[1]},${p[0]}`).join(';');
+
+  // Check cache first
+  if (routeCache.has(coordStr)) {
+    return routeCache.get(coordStr) ?? null;
+  }
+
   try {
-    const coordStr = points.map(p => `${p[1]},${p[0]}`).join(';');
     const url = `${OSRM_BASE_URL}/${coordStr}?overview=full&geometries=geojson`;
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10-second timeout
     const response = await fetch(url, {
       headers: { 'Accept': 'application/json' },
-      cache: 'force-cache',
       signal: controller.signal
     });
     clearTimeout(timeoutId);
-    if (!response.ok) return null;
+    if (!response.ok) {
+      routeCache.set(coordStr, null);
+      return null;
+    }
     const data = await response.json() as OsrmResponse;
-    if (data.code !== 'Ok' || !data.routes || data.routes.length === 0) return null;
+    if (data.code !== 'Ok' || !data.routes || data.routes.length === 0) {
+      routeCache.set(coordStr, null);
+      return null;
+    }
     const route = data.routes[0];
-    return {
+    const result: RouteGeometry = {
       coordinates: route.geometry.coordinates.map((c: number[]) => [c[1], c[0]] as [number, number]),
       distance: route.distance,
       duration: route.duration,
       source: 'OSRM'
     };
+    routeCache.set(coordStr, result);
+    return result;
   } catch {
+    routeCache.set(coordStr, null);
     return null;
   }
 }
 
 // Straight-line fallback (only used if OSRM is completely unreachable).
+// Generates multiple intermediate points along the straight line so the map
+// at least shows a visible path rather than a single 2-point line.
 function straightLineGeometry(origin: [number, number], destination: [number, number]): RouteGeometry {
   const distance = haversineKm(origin, destination);
+  const steps = Math.max(20, Math.floor(distance / 10));
+  const coords: [number, number][] = [];
+  for (let i = 0; i <= steps; i++) {
+    const fraction = i / steps;
+    coords.push([
+      origin[0] + (destination[0] - origin[0]) * fraction,
+      origin[1] + (destination[1] - origin[1]) * fraction
+    ]);
+  }
   return {
-    coordinates: [origin, destination],
+    coordinates: coords,
     distance: distance * 1000,
     duration: (distance / 40) * 3600,
     source: 'PROTOTYPE FALLBACK'
@@ -124,7 +153,7 @@ export const routeProvider = {
       }
     };
 
-    // ── 1. Direct OSRM route (with alternatives=true) ──
+    // ── 1. Direct OSRM route ──
     const directRoute = await fetchOsrm([origin, destination]);
     if (directRoute) addRoute(directRoute);
 

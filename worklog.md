@@ -469,3 +469,36 @@ Stage Summary:
 - Page no longer freezes when changing shipment
 - Simulation runs at 2s intervals (was 1s) for better performance
 - Route polylines are memoized to avoid reprocessing on every tick
+
+---
+Task ID: STRAIGHT-LINE-SPEED-REROUTE-FIX
+Agent: main (fix straight-line routes, add speed control, fix second disaster rerouting)
+Task: Fix cargo creating straight-line routes, add speed limiter/fast-forward, fix second disaster not rerouting
+
+Work Log:
+- Fixed cargo creating straight-line routes:
+  - Increased OSRM timeout from 5s to 10s (was aborting before OSRM responded)
+  - Removed `cache: 'force-cache'` which was caching failed responses
+  - Added in-memory route cache to avoid redundant OSRM calls
+  - Improved straight-line fallback to generate intermediate points (not just 2 points)
+
+- Added speed limiter/fast-forward control on Command Center:
+  - Added Play/Pause button to start/stop simulation
+  - Added speed buttons: 1x, 2x, 5x, 10x, 20x
+  - Visible in the Command Center header next to Add Cargo button
+  - Allows users to fast-forward and see the route complete quickly
+
+- Fixed second disaster not triggering reroute:
+  - Root cause: `hasAnyRec` check blocked re-detection if ANY recommendation existed (ACTIVE, APPROVED, or REJECTED)
+  - Fix: Changed to only block if there's an ACTIVE recommendation (APPROVED/REJECTED don't block new detection)
+  - Added check to skip incidents that already have a recommendation for this shipment
+  - For subsequent incidents, `assessIncidentImpact` now regenerates routes from the vehicle's CURRENT position with a 15-second timeout to avoid hanging
+
+- Fixed `hasActiveRec` variable name collision (was defined twice in simulationService)
+
+Verified:
+1. ✅ Speed control visible on Command Center (1x, 2x, 5x, 10x, 20x + Play/Pause)
+2. ✅ Vehicle moves at selected speed (64 km/h at 2x)
+3. ✅ First disaster → reroute recommendation → approve → driver ack → vehicle moves
+4. ✅ Second disaster detected as new incident
+5. ✅ Lint: 0 errors
