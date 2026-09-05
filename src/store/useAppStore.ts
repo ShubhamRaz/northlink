@@ -126,6 +126,8 @@ interface AppState {
   addShipment: (shipment: Shipment) => void;
   hydrateShipments: (shipments: Shipment[]) => void;
   persistShipments: () => Promise<void>;
+  persistVehicles: () => void;
+  hydrateVehicles: (vehicles: Vehicle[], activeRoutes: RouteAlternative[]) => void;
 }
 
 const defaultLayers: MapLayer[] = ['Corridors', 'Vehicles', 'Incidents', 'Deliveries'];
@@ -388,6 +390,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
     state.refreshJourneyAnalysis();
     void state.persistShipments();
+    state.persistVehicles();
   },
 
   overrideInitialRoute: (shipmentId, routeId, reason) => {
@@ -466,6 +469,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
     }
     void state.persistShipments();
+    state.persistVehicles();
   },
 
   // --- 2. INCIDENT & MID-JOURNEY LOGIC ---
@@ -524,8 +528,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (vehicle.currentRouteGeometry?.length) {
         const vehicleIndex = nearestRouteIndex(vehicle.coordinates, vehicle.currentRouteGeometry);
         const incidentIndex = nearestRouteIndex(incident.coordinates, vehicle.currentRouteGeometry);
-        return incidentIndex > vehicleIndex &&
-          haversineKm(incident.coordinates, vehicle.currentRouteGeometry[incidentIndex]) <= 35;
+        const distToRoute = haversineKm(incident.coordinates, vehicle.currentRouteGeometry[incidentIndex]);
+        return incidentIndex > vehicleIndex && distToRoute <= 35;
       }
       const activeRoute = state.activeRoutes.find(r => r.id === vehicle.currentRouteId);
       return Boolean(activeRoute?.corridorIds.includes(incident.affectedCorridorId ?? ''));
@@ -565,21 +569,28 @@ export const useAppStore = create<AppState>((set, get) => ({
         // Generate alternatives
         const alternatives = await generateRoutesAsync(shipment, get().incidents, state.simulationMode, vehicle.coordinates, destination);
         const currentRouteAlt = state.activeRoutes.find(a => a.id === shipment.routeId);
-        const bestRoute = alternatives.find(a => a.isFeasible && a.id !== shipment.routeId);
+        // Prefer feasible, otherwise pick the least-risky alternative so the dispatcher always sees options
+        const bestRoute = alternatives.find(a => a.isFeasible && a.id !== shipment.routeId)
+          || alternatives.slice().sort((a, b) => a.risk - b.risk)[0];
         
         if (bestRoute) {
+          const allBlocked = !alternatives.some(a => a.isFeasible);
           const rec: RouteRecommendation = {
             id: 'REC-' + Math.random().toString(36).substring(7),
             shipmentId: shipment.id,
             incidentId,
             recommendedRouteId: bestRoute.id,
             alternativeRoutes: alternatives,
-            reason: `Avoids affected corridor. Reduces risk from ${currentRouteAlt?.risk || 100}% to ${bestRoute.risk}%.`,
+            reason: allBlocked
+              ? `All routes affected by ${incident.type}. ${bestRoute.name} is the least-risky option at ${bestRoute.risk}% risk. Vehicle paused for safety pending dispatcher decision.`
+              : `Avoids affected corridor. Reduces risk from ${currentRouteAlt?.risk || 100}% to ${bestRoute.risk}%.`,
             status: 'ACTIVE',
             createdAt: new Date().toISOString(),
             lastEvaluatedAt: new Date().toISOString(),
             trigger: 'Mid-Journey Verification',
-            explanation: `NORTHLINK detected a verified unresolved ${incident.type.toLowerCase()} ahead on the current route. The affected route has ${currentRouteAlt?.risk ?? 100}% predicted risk; ${bestRoute.name} is recommended at ${bestRoute.risk}% risk with an estimated ${Math.floor(bestRoute.currentEta / 60)}h ${bestRoute.currentEta % 60}m journey.`
+            explanation: allBlocked
+              ? `NORTHLINK detected a verified unresolved ${incident.type.toLowerCase()} ahead. All candidate routes to ${shipment.destination} are affected. ${bestRoute.name} is the least-risky option at ${bestRoute.risk}% risk with an estimated ${Math.floor(bestRoute.currentEta / 60)}h ${bestRoute.currentEta % 60}m journey. Vehicle is paused for safety. Dispatcher must decide whether to proceed, reroute, or hold.`
+              : `NORTHLINK detected a verified unresolved ${incident.type.toLowerCase()} ahead on the current route. The affected route has ${currentRouteAlt?.risk ?? 100}% predicted risk; ${bestRoute.name} is recommended at ${bestRoute.risk}% risk with an estimated ${Math.floor(bestRoute.currentEta / 60)}h ${bestRoute.currentEta % 60}m journey.`
           };
           set(s => ({ routeRecommendations: [rec, ...s.routeRecommendations], activeRoutes: alternatives }));
           import('@/services/assistantService').then(({ assistantService }) => {
@@ -594,6 +605,13 @@ export const useAppStore = create<AppState>((set, get) => ({
           });
         }
       }
+
+      if (affectedShipments.length > 0) {
+        get().addEvent({ message: `Impact assessment complete for ${incidentId}: ${affectedShipments.length} shipment(s) affected.`, type: 'warning' });
+        get().persistVehicles();
+      }
+    } else {
+      get().addEvent({ message: `Impact assessment complete for ${incidentId}: no in-transit shipments affected.`, type: 'info' });
     }
   },
 
@@ -649,6 +667,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
       get().addEvent({ message: `Dispatcher changed route for ${shipmentId} to ${newRoute.name}. Waiting for driver acknowledgment.`, type: 'success' });
       void get().persistShipments();
+      get().persistVehicles();
       
     } else {
       const incident = rec.incidentId ? state.incidents.find(item => item.id === rec.incidentId) : undefined;
@@ -679,6 +698,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
       get().addEvent({ message: `Dispatcher kept current route for ${shipmentId}. ${remainsUnsafe ? 'Vehicle remains paused for safety.' : 'Vehicle continues monitoring.'}`, type: remainsUnsafe ? 'warning' : 'info' });
       void get().persistShipments();
+      get().persistVehicles();
     }
   },
 
@@ -741,8 +761,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       simulationService.pause();
     });
 
+    try { window.localStorage.removeItem('northlink:vehicles'); } catch { /* best effort */ }
+    try { window.localStorage.removeItem('northlink:shipments'); } catch { /* best effort */ }
+
     get().addEvent({ message: 'System reset to initial operational state.', type: 'info' });
     get().recalculateNetwork();
+    void get().persistShipments();
 
     // Reset leaves the system stopped; the dispatcher must explicitly dispatch cargo.
   },
@@ -790,6 +814,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       shipmentId: alert.shipmentId, vehicleId: alert.vehicleId,
       action: 'Driver acknowledged route update', nextState: 'In Transit'
     });
+    get().persistVehicles();
+    void get().persistShipments();
   },
 
   queueIncident: (incidentData) => set((state) => {
@@ -965,5 +991,24 @@ export const useAppStore = create<AppState>((set, get) => ({
       type: 'info'
     });
     void get().persistShipments();
+  },
+
+  persistVehicles: () => {
+    const { vehicles, activeRoutes } = get();
+    try {
+      window.localStorage.setItem('northlink:vehicles', JSON.stringify({
+        vehicles,
+        activeRoutes
+      }));
+    } catch {
+      // Best-effort persistence; continue silently if storage is unavailable.
+    }
+  },
+
+  hydrateVehicles: (vehicles, activeRoutes) => {
+    set(state => ({
+      vehicles: vehicles.length > 0 ? vehicles : state.vehicles,
+      activeRoutes: activeRoutes.length > 0 ? activeRoutes : state.activeRoutes,
+    }));
   }
 }));

@@ -17,6 +17,18 @@ export function AppInitializer() {
     }
 
     try {
+      const localVehicles = window.localStorage.getItem('northlink:vehicles');
+      if (localVehicles) {
+        const parsed = JSON.parse(localVehicles);
+        if (parsed && Array.isArray(parsed.vehicles) && Array.isArray(parsed.activeRoutes)) {
+          useAppStore.getState().hydrateVehicles(parsed.vehicles, parsed.activeRoutes);
+        }
+      }
+    } catch {
+      // Continue with mock data when local prototype storage is unavailable.
+    }
+
+    try {
       const localQueue = window.localStorage.getItem('northlink:offline-queue');
       if (localQueue) {
         const parsed = JSON.parse(localQueue);
@@ -38,10 +50,18 @@ export function AppInitializer() {
           shipmentsHydrated: true,
           shipmentPersistenceError: 'Shipment persistence is unavailable; using local prototype data.'
         });
+      })
+      .finally(() => {
+        // After hydration, restart the simulation if there are in-transit shipments
+        const state = useAppStore.getState();
+        const hasInTransit = state.shipments.some(s =>
+          s.status === 'In Transit' && s.assignedVehicleId &&
+          state.vehicles.some(v => v.id === s.assignedVehicleId && v.status === 'In Transit')
+        );
+        if (hasInTransit && state.networkOnline && !state.simulationActive) {
+          simulationService.start();
+        }
       });
-
-    // Simulation should only start when a shipment is explicitly Dispatched.
-    // simulationService.start() is now handled by the dispatchCargo action.
 
     return () => {
       simulationService.pause();

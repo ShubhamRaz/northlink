@@ -3,7 +3,7 @@
 import React from 'react';
 import {
   LayoutDashboard, Box, Route, Truck, AlertTriangle,
-  BrainCircuit, Users, Package, PieChart, Map as MapIcon
+  BrainCircuit, Users, Package, PieChart, Map as MapIcon, Settings
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAppStore, AppView } from '@/store/useAppStore';
@@ -27,6 +27,7 @@ const sidebarItems = [
   ...operationsNavigation,
   { name: 'Field Officer', view: 'field' as AppView, href: '/field', icon: Users },
   { name: 'Driver Mode', view: 'driver' as AppView, href: '/driver', icon: Package },
+  { name: 'Settings', view: 'settings' as AppView, href: '/settings', icon: Settings },
 ];
 
 export function Sidebar() {

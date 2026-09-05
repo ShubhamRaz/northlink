@@ -101,7 +101,7 @@ export function SettingsView() {
         <CardContent className="p-4 space-y-3">
           <div className="flex justify-between items-center">
             <span className="text-sm text-slate-400">Model</span>
-            <span className="text-sm font-mono text-purple-400">gemini-1.5-flash</span>
+            <span className="text-sm font-mono text-purple-400">z-ai-web-dev-sdk</span>
           </div>
           <div className="flex justify-between items-center">
             <span className="text-sm text-slate-400">Grounding</span>
@@ -109,7 +109,7 @@ export function SettingsView() {
           </div>
           <div className="flex justify-between items-center">
             <span className="text-sm text-slate-400">Fallback</span>
-            <span className="text-sm text-slate-300">Rule-based (no API key)</span>
+            <span className="text-sm text-slate-300">Rule-based (offline mode)</span>
           </div>
         </CardContent>
       </Card>

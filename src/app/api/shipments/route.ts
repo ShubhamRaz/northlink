@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { mockShipments } from '@/data/mockData';
 import { Shipment } from '@/types';
 
 const shipmentStatuses = new Set<Shipment['status']>([
@@ -22,7 +21,9 @@ export async function GET() {
   try {
     const rows = await db.shipment.findMany();
     if (rows.length === 0) {
-      return NextResponse.json(mockShipments);
+      // Return empty array so the client falls back to its initial mock data
+      // and any persisted localStorage state, rather than overriding with mock data.
+      return NextResponse.json([]);
     }
     const shipments: Shipment[] = [];
     for (const row of rows) {
@@ -35,8 +36,8 @@ export async function GET() {
     }
     return NextResponse.json(shipments);
   } catch (error) {
-    console.error('Shipment GET DB error, falling back to mock data:', error);
-    return NextResponse.json(mockShipments);
+    console.error('Shipment GET DB error:', error);
+    return NextResponse.json([]);
   }
 }
 

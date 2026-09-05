@@ -113,3 +113,55 @@ Stage Summary:
 - Leaflet map renders with markers, zoom controls, OpenStreetMap tiles
 - No console errors, no runtime errors, lint clean
 - Prototype is FULLY WORKING and production-ready for demo
+
+---
+Task ID: FINAL-FIXES
+Agent: main (completing the prototype)
+Task: Fix all workflow issues and make the full shipment lifecycle + disaster reroute flow work end-to-end
+
+Work Log:
+- Fixed: Added "Settings" to the Sidebar navigation (was missing — users couldn't access simulation controls)
+- Fixed: Added vehicle state persistence to localStorage (`persistVehicles`/`hydrateVehicles`) so route assignments survive page reloads (was the root cause of impact assessment failing after reload)
+- Fixed: Added `persistVehicles()` calls to `approveInitialRoute`, `dispatchCargo`, `decideMidJourneyRoute`, `assessIncidentImpact`, `acknowledgeRouteChange`, and `resetScenario`
+- Fixed: Added `persistShipments()` call to `acknowledgeRouteChange` so shipment status survives after driver acknowledges route change
+- Fixed: Simulation now auto-restarts after page reload if there are in-transit shipments (AppInitializer checks after hydration)
+- Fixed: `assessIncidentImpact` now creates a reroute recommendation even when ALL routes are blocked — picks the least-risky alternative so the dispatcher always sees options (was silently skipping when no feasible route)
+- Fixed: Added event logging to `assessIncidentImpact` for both affected and not-affected cases
+- Fixed: Shipments API GET now returns empty array (not mock data) when DB is empty, so localStorage state isn't overridden
+- Fixed: Updated SettingsView to show "z-ai-web-dev-sdk" instead of "gemini-1.5-flash"
+
+End-to-End Verified Flow:
+1. ✅ Cargo Ready → auto-analyze routes → APPROVE ROUTE → DISPATCH CARGO → In Transit (simulation moves vehicle)
+2. ✅ Settings → INJECT MID-JOURNEY DISASTER → landslide incident created
+3. ✅ Incidents → Mark Verified → Assess Route Impact → finds affected in-transit shipment
+4. ✅ Vehicle paused for safety, alert sent to driver
+5. ✅ Route Optimizer → Route Comparison → "MID-JOURNEY REROUTE REQUIRED" banner with least-risky alternative
+6. ✅ APPROVE REROUTE → shipment/vehicle status → Route Change Pending, alert sent to driver
+7. ✅ Driver Mode → login as TRUCK-07 driver → sees "CRITICAL ROUTE UPDATE" alert
+8. ✅ Click "Acknowledge & Proceed" → vehicle resumes In Transit
+9. ✅ State persists across page reload (both shipments and vehicles)
+10. ✅ Simulation auto-restarts after reload
+
+Features Verified:
+- Command Center: KPIs, live Leaflet map, event feed, priority deliveries, vehicle overview, incident feed, future risk, supply intelligence
+- Live Map: full-screen map with markers and zoom controls
+- Route Optimizer: Journey Intelligence (5 time-aware segments with weather), Route Comparison (candidates, recommendation, approval, dispatch, mid-journey reroute)
+- AI Insights: corridor risk predictions with contributing factors
+- Analytics: baseline vs NORTHLINK AI comparison, decision history
+- Fleet: vehicle cards with progress bars, speed, heading, ETA
+- Shipments: Kanban-style board with all lifecycle statuses
+- Incidents: verify, assess impact, resolve, reject workflow
+- Settings: simulation controls (NORMAL/HEAVY RAIN/LANDSLIDE/TRAFFIC SURGE), network toggle, playback speed, INJECT DISASTER, RESET SCENARIO
+- Field Officer: standalone incident reporting form with offline queue
+- Driver Mode: standalone view with route alerts and acknowledgment
+- AI Assistant: grounded responses from z-ai-web-dev-sdk with real operational data
+- Notification Center: alert badge count, notification dropdown
+
+Stage Summary:
+- ALL features are working and linked correctly
+- Full shipment lifecycle (Planned → Ready → In Transit → Delivered) works
+- Full disaster response flow (inject → verify → assess → reroute → driver ack) works
+- State persists across page reloads
+- Simulation auto-restarts after reload
+- Lint: 0 errors, 1 pre-existing warning
+- Dev log: clean, no errors
