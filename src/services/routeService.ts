@@ -32,7 +32,7 @@ function haversineKm(a: [number, number], b: [number, number]): number {
   return 6371 * 2 * Math.atan2(Math.sqrt(value), Math.sqrt(1 - value));
 }
 
-function nearestDistanceKm(point: [number, number], geometry: [number, number][]): number {
+export function nearestDistanceKm(point: [number, number], geometry: [number, number][]): number {
   return geometry.reduce((nearest, coordinate) => Math.min(nearest, haversineKm(point, coordinate)), Number.POSITIVE_INFINITY);
 }
 

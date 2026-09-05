@@ -52,6 +52,7 @@ export interface Incident {
   status: 'Reported' | 'Under Review' | 'Verified' | 'Unresolved' | 'Resolved' | 'Rejected';
   verificationStatus: 'REPORTED' | 'UNDER_REVIEW' | 'VERIFIED' | 'REJECTED';
   resolutionStatus: 'UNRESOLVED' | 'RESOLVED';
+  passability?: OperationalStatus;
   impactAssessment?: {
     assessedAt: string;
     affectedShipmentIds: string[];

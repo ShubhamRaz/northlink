@@ -1,5 +1,6 @@
 import { useAppStore } from '@/store/useAppStore';
 import { ROUTE_COORDS } from '@/data/routeGeometry';
+import { incidentRelevanceService } from '@/services/incidentRelevanceService';
 
 class SimulationEngine {
   private tickInterval: NodeJS.Timeout | null = null;
@@ -88,10 +89,11 @@ class SimulationEngine {
             r => r.incidentId === inc.id && r.shipmentId === shipment.id
           );
           if (alreadyHandled) return false;
-          // Check if incident is near the vehicle's current route ahead
-          const dist = this.pointToRouteDistance(inc.coordinates, vehicle.currentRouteGeometry!);
-          return dist <= 50;
+          
+          const relevance = incidentRelevanceService.assessIncidentRelevance(inc, vehicle, shipment);
+          return relevance.requiresSafetyPause;
         });
+
         if (nearestIncident && vehicle.status === 'In Transit') {
           // Auto-pause and let the dispatcher handle it
           useAppStore.setState(s => ({

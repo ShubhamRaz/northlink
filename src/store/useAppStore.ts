@@ -11,6 +11,7 @@ import {
 import { generateRoutesAsync, resolveLocationCoordinates, reassessRemainingJourney } from '@/services/routeService';
 import { predictCorridorRisk } from '@/services/riskService';
 import { determineAccessibility } from '@/services/accessibilityService';
+import { incidentRelevanceService } from '@/services/incidentRelevanceService';
 
 export type AppView =
   | 'command-center'
@@ -517,20 +518,39 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (get().currentUserRole !== 'Dispatcher' && get().currentUserRole !== 'Admin') return;
     const incident = get().incidents.find(i => i.id === id);
     if (!incident || incident.verificationStatus !== 'VERIFIED') return;
-    set(state => ({ incidents: state.incidents.map(i => i.id === id ? { ...i, status: 'Resolved', resolutionStatus: 'RESOLVED' } : i) }));
+    set(state => ({ incidents: state.incidents.map(i => i.id === id ? { ...i, status: 'Resolved', resolutionStatus: 'RESOLVED', passability: 'OPEN' } : i) }));
     get().recordAuditEvent({ eventType: 'INCIDENT_RESOLVED', entityType: 'INCIDENT', entityId: id, incidentId: id, action: 'Incident resolved', previousState: incident.resolutionStatus, nextState: 'RESOLVED' });
     get().addEvent({ message: `Incident ${id} Resolved.`, type: 'success' });
     
+    const state = get();
     // Cancel any active recommendations related to this incident
-    set(state => ({
-      routeRecommendations: state.routeRecommendations.map((r: RouteRecommendation) => r.incidentId === id && r.status === 'ACTIVE' ? { ...r, status: 'CANCELLED' } : r),
-      shipments: state.shipments.map(shipment => shipment.status === 'Paused for Safety' && shipment.assignedVehicleId
-        ? { ...shipment, status: 'In Transit' }
-        : shipment),
-      vehicles: state.vehicles.map(vehicle => vehicle.status === 'Paused for Safety'
-        ? { ...vehicle, status: 'In Transit' }
-        : vehicle)
+    const staleRecs = state.routeRecommendations.filter(r => r.incidentId === id && r.status === 'ACTIVE');
+    
+    set(s => ({
+      routeRecommendations: s.routeRecommendations.map((r: RouteRecommendation) => r.incidentId === id && r.status === 'ACTIVE' ? { ...r, status: 'CANCELLED' } : r)
     }));
+
+    // Re-evaluate paused vehicles
+    staleRecs.forEach(rec => {
+      const shipment = get().shipments.find(sh => sh.id === rec.shipmentId);
+      const vehicle = get().vehicles.find(v => v.id === shipment?.assignedVehicleId);
+      
+      if (shipment && vehicle && vehicle.status === 'Paused for Safety') {
+        // Are there other active blockages for this shipment?
+        const otherBlockages = get().routeRecommendations.some(r => r.shipmentId === shipment.id && r.status === 'ACTIVE');
+        if (!otherBlockages) {
+          set(s => ({
+            shipments: s.shipments.map(sh => sh.id === shipment.id ? { ...sh, status: 'In Transit' } : sh),
+            vehicles: s.vehicles.map(v => v.id === vehicle.id ? { ...v, status: 'In Transit', speed: 45 } : v)
+          }));
+          get().addAlert({
+            type: 'INFO', title: 'Vehicle Resumed',
+            message: `Incident resolved. Vehicle ${vehicle.id} has safely resumed its journey.`,
+            severity: 'Low', recipientRole: 'Driver', actionRequired: false, actionTaken: false
+          });
+        }
+      }
+    });
 
     setTimeout(() => get().recalculateNetwork(), 100);
   },
@@ -549,25 +569,23 @@ export const useAppStore = create<AppState>((set, get) => ({
     
     const timeNow = new Date().toLocaleTimeString();
 
-    set(s => ({ incidents: s.incidents.map(i => i.id === incidentId ? { ...i, status: 'Unresolved', impactAssessment: { assessedAt: timeNow, affectedShipmentIds: [], affectsRemainingRoute: false, recommendedAction: 'MONITOR' } } : i) }));
+    // Cache the relevance per shipment to avoid re-calculating
+    const relevanceMap = new Map<string, ReturnType<typeof incidentRelevanceService.assessIncidentRelevance>>();
 
     const affectedShipments = state.shipments.filter(s => {
-      // Include shipments that are in transit OR were auto-paused by the safety system
       if (s.status !== 'In Transit' && s.status !== 'Route Change Pending' && s.status !== 'Paused for Safety') return false;
       const vehicle = state.vehicles.find(v => v.id === s.assignedVehicleId);
       if (!vehicle || !vehicle.currentRouteId) return false;
-      if (vehicle.currentRouteGeometry?.length) {
-        const vehicleIndex = nearestRouteIndex(vehicle.coordinates, vehicle.currentRouteGeometry);
-        const incidentIndex = nearestRouteIndex(incident.coordinates, vehicle.currentRouteGeometry);
-        const distToRoute = haversineKm(incident.coordinates, vehicle.currentRouteGeometry[incidentIndex]);
-        return incidentIndex > vehicleIndex && distToRoute <= 50;
-      }
-      const activeRoute = state.activeRoutes.find(r => r.id === vehicle.currentRouteId);
-      return Boolean(activeRoute?.corridorIds.includes(incident.affectedCorridorId ?? ''));
+      
+      const relevance = incidentRelevanceService.assessIncidentRelevance(incident, vehicle, s);
+      relevanceMap.set(s.id, relevance);
+      
+      return relevance.affectsRemainingRoute;
     });
 
     set(s => ({ incidents: s.incidents.map(i => i.id === incidentId ? {
       ...i,
+      passability: affectedShipments.length > 0 ? relevanceMap.get(affectedShipments[0].id)?.passability : i.passability,
       impactAssessment: {
         assessedAt: timeNow,
         affectedShipmentIds: affectedShipments.map(shipment => shipment.id),
@@ -577,8 +595,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     } : i) }));
 
     if (affectedShipments.length > 0) {
-      // Recalculate corridor risk/accessibility WITHOUT marking active recommendations stale
-      // (recalculateNetwork would mark our new recommendation as STALE in a circular loop).
       const updatedCorridors = get().corridors.map(corridor => {
         const riskPred = predictCorridorRisk(corridor, get().incidents, get().simulationMode);
         const accessibility = determineAccessibility(corridor, riskPred, get().incidents);
@@ -590,16 +606,17 @@ export const useAppStore = create<AppState>((set, get) => ({
         const vehicle = state.vehicles.find(item => item.id === shipment.assignedVehicleId);
         const destination = resolveLocationCoordinates(shipment.destination);
         if (!vehicle || !destination) continue;
-        // If it's a hard blockage, pause the vehicle
-        const unsafe = (incident.type === 'Landslide' || incident.type === 'Road Blockage' || incident.type === 'Bridge Damage') && incident.severity === 'Critical';
-        if (unsafe) {
+        
+        const relevance = relevanceMap.get(shipment.id)!;
+        
+        if (relevance.requiresSafetyPause) {
           set(s => ({
             shipments: s.shipments.map(sh => sh.id === shipment.id ? { ...sh, status: 'Route Change Pending' } : sh),
             vehicles: s.vehicles.map(v => v.id === shipment.assignedVehicleId ? { ...v, status: 'Paused for Safety' } : v)
           }));
           get().addAlert({
             type: 'CRITICAL', title: 'Vehicle Paused for Safety',
-            message: `Vehicle ${shipment.assignedVehicleId} paused due to verified ${incident.type} ahead.`,
+            message: `Vehicle ${shipment.assignedVehicleId} paused due to ${relevance.reason}.`,
             severity: 'High', recipientRole: 'Driver', actionRequired: false, actionTaken: false
           });
         }

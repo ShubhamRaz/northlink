@@ -70,6 +70,18 @@
   - Fix: Route scoring calls `evaluateRouteTimeAware` which calculates a time-aware `maxRiskProb` and `totalExpectedDelay`, yielding a deterministic score: `totalETA + (maxRisk * 3) - resilience/100`.
   - Verify: Slower but safer routes can now successfully out-score faster but extreme-weather routes.
 ## Phase 5 — Incident and Safety
+- [x] Implement rigorous Incident Lifecycle
+  - Problem: `status` overloaded, causing mixed concerns.
+  - Fix: Standardized `verificationStatus` and `resolutionStatus`. Rejected incidents are ignored.
+- [x] Establish Incident Relevance Service
+  - Problem: Simple `50km` radius caused false positives for behind-vehicle or off-route incidents.
+  - Fix: `incidentRelevanceService` projects incident onto remaining route geometry and ensures it's actually ahead.
+- [x] Detach Severity from Passability
+  - Problem: `Critical` severity forced automatic vehicle pause, even if passability was OPEN.
+  - Fix: Introduced deterministic `passability` (OPEN, RESTRICTED, BLOCKED). Only a direct (<=10km) critical blockage triggers `PAUSED FOR SAFETY`.
+- [x] Stale Reroute Resolution
+  - Problem: Resolved incidents left vehicles paused indefinitely or left stale recommendations active.
+  - Fix: `resolveIncident` cancels stale recommendations and gracefully resumes vehicles that were explicitly paused by the incident.
 ## Phase 6 — State Management
 ## Phase 7 — Simulation and ETA
 ## Phase 8 — Gemini
