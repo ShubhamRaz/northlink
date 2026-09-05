@@ -918,6 +918,22 @@ export const useAppStore = create<AppState>((set, get) => ({
     const vehicle = shipment.assignedVehicleId ? state.vehicles.find(v => v.id === shipment.assignedVehicleId) : null;
     const progressMin = vehicle?.progressMinutes ?? 0;
 
+    // Prefer explicitly passed coordinates, then the selected route's coordinates,
+    // then the vehicle's stored route geometry (from OSRM dispatch/approval).
+    // This avoids making a new OSRM API call on every refresh.
+    const routeCoordinates = requestedCoordinates
+      ?? selectedRoute?.coordinates
+      ?? vehicle?.currentRouteGeometry
+      ?? undefined;
+    const routeDuration = requestedDuration
+      ?? selectedRoute?.currentEta
+      ?? undefined;
+
+    // If we have no geometry at all, skip analysis rather than calling OSRM in a loop
+    if (!routeCoordinates) {
+      return;
+    }
+
     const analysis = await journeyService.analyzeJourney(
       shipmentId,
       routeId,
@@ -927,8 +943,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       state.simulationMode,
       state.incidents,
       progressMin,
-      requestedCoordinates ?? selectedRoute?.coordinates,
-      requestedDuration ?? selectedRoute?.currentEta
+      routeCoordinates,
+      routeDuration
     );
 
     set({ journeyAnalysis: analysis });

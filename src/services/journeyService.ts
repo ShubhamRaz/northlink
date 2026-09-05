@@ -293,21 +293,18 @@ export const journeyService = {
       waypoints, routeId, startTime, simulationMode, incidents, vehicleProgressMinutes
     );
 
-    // 2. Fetch real route geometry
+    // 2. Bind route geometry to segments
     try {
-      const { routeProvider } = await import('./routeProvider');
-      // Origin/Dest as [lat, lng]
-      const originCoords = waypoints[0].coords;
-      const destCoords = waypoints[waypoints.length - 1].coords;
-      
+      // If we already have route coordinates (from OSRM dispatch), use them directly.
+      // Only call OSRM if no coordinates were provided.
       const realRoute = routeCoordinates?.length
-        ? { coordinates: routeCoordinates, distance: 0, duration: (routeDurationMinutes ?? 240) * 60 }
-        : await routeProvider.getRoute(originCoords, destCoords);
+        ? { coordinates: routeCoordinates }
+        : await (await import('./routeProvider')).routeProvider.getRoute(waypoints[0].coords, waypoints[waypoints.length - 1].coords);
       const totalPoints = realRoute.coordinates.length;
-      
+
       // 3. Slice geometry into segments based on distance proportions
       let currentPointIndex = 0;
-      const totalAssumedDistance = waypoints[waypoints.length - 1].distFromOrigin;
+      const totalAssumedDistance = waypoints[waypoints.length - 1].distFromOrigin || 1;
 
       for (const seg of segments) {
         if (seg.sequence === segments.length) {
@@ -318,7 +315,7 @@ export const journeyService = {
           const proportion = seg.segmentDistance / totalAssumedDistance;
           const pointsInSegment = Math.max(2, Math.floor(totalPoints * proportion));
           const endIndex = Math.min(totalPoints, currentPointIndex + pointsInSegment);
-          
+
           seg.geometry = realRoute.coordinates.slice(currentPointIndex, endIndex);
           currentPointIndex = endIndex - 1; // overlap by 1 point to connect lines
         }

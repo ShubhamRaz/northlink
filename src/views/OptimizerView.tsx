@@ -11,7 +11,21 @@ import { JourneyIntelligencePanel } from '@/features/journey/JourneyIntelligence
 const Map = dynamic(() => import('@/features/command-center/MapComponent'), { ssr: false });
 
 export function OptimizerView() {
-  const { shipments, activeRoutes, analyzeRoutesForReadyShipment, markCargoReady, decisionHistory, approveInitialRoute, overrideInitialRoute, selectShipment, analyzeJourney, dispatchCargo, routeRecommendations, decideMidJourneyRoute, selectedShipmentId } = useAppStore();
+  // Use individual selectors to avoid re-rendering on every simulation tick
+  // (vehicles change every tick but this component doesn't need them)
+  const shipments = useAppStore(s => s.shipments);
+  const activeRoutes = useAppStore(s => s.activeRoutes);
+  const decisionHistory = useAppStore(s => s.decisionHistory);
+  const routeRecommendations = useAppStore(s => s.routeRecommendations);
+  const selectedShipmentId = useAppStore(s => s.selectedShipmentId);
+  const analyzeRoutesForReadyShipment = useAppStore(s => s.analyzeRoutesForReadyShipment);
+  const markCargoReady = useAppStore(s => s.markCargoReady);
+  const approveInitialRoute = useAppStore(s => s.approveInitialRoute);
+  const overrideInitialRoute = useAppStore(s => s.overrideInitialRoute);
+  const selectShipment = useAppStore(s => s.selectShipment);
+  const dispatchCargo = useAppStore(s => s.dispatchCargo);
+  const decideMidJourneyRoute = useAppStore(s => s.decideMidJourneyRoute);
+
   const [overrideReason, setOverrideReason] = useState('');
   const [showOverride, setShowOverride] = useState(false);
   const [activeTab, setActiveTab] = useState<'routes' | 'journey'>('journey');

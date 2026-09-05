@@ -223,3 +223,39 @@ Stage Summary:
 - Simulation runs at 4x speed by default for faster feedback
 - Disaster detection threshold increased to 50km for better map-click integration
 - All features verified working end-to-end
+
+---
+Task ID: FREEZE-MAP-ROUTING-FIXES
+Agent: main (fix browser freeze, map routes, auto-reroute)
+Task: Fix browser freeze when changing shipment, fix map showing no routes, fix cargo passing through disasters
+
+Work Log:
+- Fixed browser freeze when changing shipment dropdown in Route Optimizer:
+  - Root cause: OptimizerView used `useAppStore()` without selectors, causing re-render every simulation tick (every 250ms at 4x). Combined with `refreshJourneyAnalysis` calling OSRM API when journeyAnalysis was null.
+  - Fix 1: Changed to individual `useAppStore(s => s.xxx)` selectors so component only re-renders when relevant state changes
+  - Fix 2: `analyzeJourney` now uses vehicle's stored `currentRouteGeometry` instead of calling OSRM repeatedly
+  - Fix 3: Skip analysis entirely when no route geometry available (instead of calling OSRM in a loop)
+  - Fix 4: Only call `refreshJourneyAnalysis` when `progressMinutes > 0` (avoids calling it on first tick after selection)
+
+- Fixed map showing no routes:
+  - Root cause: MapComponent skipped rendering the vehicle route when `journeyAnalysis` existed for the selected shipment's vehicle, but when journeyAnalysis was null (common after selecting a shipment), no route was rendered at all
+  - Fix: Only skip the basic polyline if `journeyAnalysis?.segments?.length > 0` (actually has segments to show). Otherwise, still draw the basic route from `vehicle.currentRouteGeometry`
+
+- Fixed cargo passing through disasters without rerouting:
+  - Root cause: Simulation only moved the vehicle along geometry — it never checked for incidents ahead. The vehicle only paused when you manually clicked "Assess Route Impact"
+  - Fix: Added auto-detection in the simulation tick — every tick, checks each in-transit vehicle for verified unresolved incidents ahead on its route (within 50km). If found and no existing active recommendation, auto-triggers `assessIncidentImpact`
+  - Added `nearestRouteIndex` helper method to SimulationEngine class
+  - Also fixed simulation to use `vehicle.currentRouteGeometry` (OSRM route) as fallback before `ROUTE_COORDS` (static file)
+
+- Also fixed `journeyService.analyzeJourney` to not import/call routeProvider when route coordinates are already provided (avoids unnecessary OSRM calls)
+
+Verified end-to-end:
+1. ✅ Dispatched cargo → changed shipment dropdown → NO FREEZE, page stays responsive
+2. ✅ Map shows 11 SVG paths including blue TRUCK-07 route polyline
+3. ✅ Injected disaster near Imphal → verified incident → simulation AUTO-DETECTED it within seconds → "MID-JOURNEY REROUTE REQUIRED" banner appeared with APPROVE REROUTE / KEEP CURRENT ROUTE buttons
+4. ✅ Lint: 0 errors, 1 pre-existing warning
+
+Stage Summary:
+- Browser no longer freezes when changing shipment
+- Map shows vehicle routes correctly
+- Cargo automatically detects disasters on its path and generates reroute recommendations without manual intervention

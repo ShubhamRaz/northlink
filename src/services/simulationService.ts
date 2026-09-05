@@ -154,16 +154,14 @@ class SimulationEngine {
           newCoords = [lat1 + (lat2 - lat1) * remainder, lon1 + (lon2 - lon1) * remainder];
         }
         currentSpeed = 50 + (Math.random() * 10 - 5);
-      } else if (vehicle.currentRouteId && ROUTE_COORDS[vehicle.currentRouteId]) {
-        // Simple interpolation using ROUTE_COORDS fallback
-        const geom = ROUTE_COORDS[vehicle.currentRouteId];
-        // Assuming a standard route takes 240 simulation minutes (4 hours) for this fallback
-        const fraction = Math.max(0, Math.min(1, newProgress / 240));
-        
+      } else if (vehicle.currentRouteGeometry?.length) {
+        // Fallback: use the vehicle's stored OSRM route geometry
+        const geom = vehicle.currentRouteGeometry;
+        const fraction = Math.max(0, Math.min(1, newProgress / routeDuration));
+
         const exactIndex = fraction * (geom.length - 1);
         const lower = Math.floor(exactIndex);
         const upper = Math.ceil(exactIndex);
-        
         if (lower === upper) {
           newCoords = geom[lower];
         } else {
@@ -172,7 +170,25 @@ class SimulationEngine {
           const [lat2, lon2] = geom[upper];
           newCoords = [lat1 + (lat2 - lat1) * remainder, lon1 + (lon2 - lon1) * remainder];
         }
-        
+        currentSpeed = 50 + (Math.random() * 10 - 5);
+      } else if (vehicle.currentRouteId && ROUTE_COORDS[vehicle.currentRouteId]) {
+        // Last-resort fallback using static ROUTE_COORDS
+        const geom = ROUTE_COORDS[vehicle.currentRouteId];
+        const fraction = Math.max(0, Math.min(1, newProgress / 240));
+
+        const exactIndex = fraction * (geom.length - 1);
+        const lower = Math.floor(exactIndex);
+        const upper = Math.ceil(exactIndex);
+
+        if (lower === upper) {
+          newCoords = geom[lower];
+        } else {
+          const remainder = exactIndex - lower;
+          const [lat1, lon1] = geom[lower];
+          const [lat2, lon2] = geom[upper];
+          newCoords = [lat1 + (lat2 - lat1) * remainder, lon1 + (lon2 - lon1) * remainder];
+        }
+
         currentSpeed = 50 + (Math.random() * 10 - 5);
       }
 
@@ -201,12 +217,42 @@ class SimulationEngine {
       }
     });
 
-    // Refresh journey analysis every 5 minutes for the currently selected shipment
+    // Refresh journey analysis every 5 simulation-minutes for the currently selected shipment
+    // (only when progress > 0 to avoid calling it on the very first tick after selection)
     const selectedActive = activeShipments.find(s => s.id === state.selectedShipmentId);
     if (selectedActive) {
       const v = state.vehicles.find(v => v.id === selectedActive.assignedVehicleId);
-      if (v && Math.floor(v.progressMinutes || 0) % 5 === 0) {
+      const pm = Math.floor(v?.progressMinutes || 0);
+      if (v && pm > 0 && pm % 5 === 0) {
         state.refreshJourneyAnalysis();
+      }
+    }
+
+    // Auto-detect verified unresolved incidents ahead on the route and trigger impact assessment
+    for (const shipment of activeShipments) {
+      const vehicle = state.vehicles.find(v => v.id === shipment.assignedVehicleId);
+      if (!vehicle || vehicle.status !== 'In Transit' || !vehicle.currentRouteGeometry?.length) continue;
+
+      // Check if there's a verified unresolved incident ahead on this vehicle's route
+      const vehicleIndex = this.nearestRouteIndex(vehicle.coordinates, vehicle.currentRouteGeometry);
+      const hasExistingRec = state.routeRecommendations.some(r =>
+        r.shipmentId === shipment.id && r.status === 'ACTIVE'
+      );
+
+      if (!hasExistingRec) {
+        for (const incident of state.incidents) {
+          if (incident.verificationStatus !== 'VERIFIED' || incident.resolutionStatus !== 'UNRESOLVED') continue;
+
+          const incidentIndex = this.nearestRouteIndex(incident.coordinates, vehicle.currentRouteGeometry);
+          const distToRoute = this.haversineKm(incident.coordinates, vehicle.currentRouteGeometry[incidentIndex]);
+
+          // If incident is ahead of vehicle and within 50km of the route
+          if (incidentIndex > vehicleIndex && distToRoute <= 50) {
+            // Auto-trigger impact assessment
+            state.assessIncidentImpact(incident.id);
+            break; // Only trigger once per tick
+          }
+        }
       }
     }
   }
@@ -234,6 +280,11 @@ class SimulationEngine {
     const lat2 = b[0] * Math.PI / 180;
     const value = Math.sin(dLat / 2) ** 2 + Math.sin(dLon / 2) ** 2 * Math.cos(lat1) * Math.cos(lat2);
     return 6371 * 2 * Math.atan2(Math.sqrt(value), Math.sqrt(1 - value));
+  }
+
+  private nearestRouteIndex(point: [number, number], geometry: [number, number][]): number {
+    return geometry.reduce((nearestIndex, coordinate, index) =>
+      this.haversineKm(point, coordinate) < this.haversineKm(point, geometry[nearestIndex]) ? index : nearestIndex, 0);
   }
 }
 

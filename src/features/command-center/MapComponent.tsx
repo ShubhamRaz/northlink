@@ -149,10 +149,13 @@ export default function MapComponent() {
   // Prefer the vehicle's actual currentRouteGeometry (from OSRM) when available;
   // fall back to the static ROUTE_COORDS lookup table only as a last resort.
   const vehicleRoutes = vehicles.map((v, idx) => {
-    // For the selected shipment's vehicle, prefer the detailed journeyAnalysis
-    if (journeyAnalysis && v.id === vehicles.find(vv =>
-      shipments.find(s => s.id === selectedShipmentId)?.assignedVehicleId === vv.id
-    )?.id) return null; // Handled below via journeyAnalysis segments
+    // For the selected shipment's vehicle, skip the basic polyline IF we have
+    // detailed journeyAnalysis segments to show instead. Otherwise still draw
+    // the basic route so the map is never empty.
+    const selectedShipmentVehicleId = shipments.find(s => s.id === selectedShipmentId)?.assignedVehicleId;
+    if (journeyAnalysis?.segments?.length && v.id === selectedShipmentVehicleId) {
+      return null; // Handled below via journeyAnalysis segments
+    }
 
     if (!v.currentRouteId) return null;
     const coords = v.currentRouteGeometry?.length
