@@ -128,6 +128,8 @@ interface AppState {
   persistShipments: () => Promise<void>;
   persistVehicles: () => void;
   hydrateVehicles: (vehicles: Vehicle[], activeRoutes: RouteAlternative[]) => void;
+  addVehicle: (vehicle: Vehicle) => void;
+  injectDisasterAtPoint: (coordinates: [number, number], type: Incident['type'], severity: Incident['severity'], location: string) => void;
 }
 
 const defaultLayers: MapLayer[] = ['Corridors', 'Vehicles', 'Incidents', 'Deliveries'];
@@ -175,7 +177,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   offlineQueue: [],
   currentUserRole: 'Dispatcher',
   demoStage: 0,
-  playbackSpeed: 1,
+  playbackSpeed: 4,
   journeyAnalysis: null,
   journeyStartTime: '10:00',
   currentDriverVehicleId: null,
@@ -529,7 +531,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         const vehicleIndex = nearestRouteIndex(vehicle.coordinates, vehicle.currentRouteGeometry);
         const incidentIndex = nearestRouteIndex(incident.coordinates, vehicle.currentRouteGeometry);
         const distToRoute = haversineKm(incident.coordinates, vehicle.currentRouteGeometry[incidentIndex]);
-        return incidentIndex > vehicleIndex && distToRoute <= 35;
+        return incidentIndex > vehicleIndex && distToRoute <= 50;
       }
       const activeRoute = state.activeRoutes.find(r => r.id === vehicle.currentRouteId);
       return Boolean(activeRoute?.corridorIds.includes(incident.affectedCorridorId ?? ''));
@@ -1010,5 +1012,47 @@ export const useAppStore = create<AppState>((set, get) => ({
       vehicles: vehicles.length > 0 ? vehicles : state.vehicles,
       activeRoutes: activeRoutes.length > 0 ? activeRoutes : state.activeRoutes,
     }));
+  },
+
+  addVehicle: (vehicle) => {
+    set(state => ({
+      vehicles: [...state.vehicles, vehicle]
+    }));
+    get().addEvent({
+      message: `New vehicle added: ${vehicle.id} (${vehicle.driver}) — ${vehicle.cargoType}`,
+      type: 'success'
+    });
+    get().persistVehicles();
+  },
+
+  injectDisasterAtPoint: (coordinates, type, severity, location) => {
+    const incident: Incident = {
+      id: 'INC-' + Math.floor(Math.random() * 10000),
+      type,
+      location,
+      severity,
+      timestamp: new Date().toLocaleTimeString(),
+      status: 'Reported',
+      verificationStatus: 'REPORTED',
+      resolutionStatus: 'UNRESOLVED',
+      description: `${type} reported at ${location} via map injection.`,
+      coordinates,
+      source: 'Dispatcher Map Injection',
+      confidence: 0.9,
+    };
+    get().addIncident(incident);
+    get().addEvent({
+      message: `Disaster injected at map point: ${type} (${severity}) near ${location}.`,
+      type: 'critical'
+    });
+    get().addAlert({
+      type: 'INCIDENT',
+      title: `${type} Injected at Map Point`,
+      message: `${type} (${severity}) reported near ${location}. Awaiting verification.`,
+      severity: severity === 'Critical' ? 'High' : 'Medium',
+      recipientRole: 'Dispatcher',
+      actionRequired: true,
+      actionTaken: false
+    });
   }
 }));

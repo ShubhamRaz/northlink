@@ -194,3 +194,32 @@ Stage Summary:
 - Add Cargo now works end-to-end without 404 errors
 - New shipments are automatically selected in the Route Optimizer
 - The full lifecycle (Planned → Ready → In Transit) works on newly created shipments
+
+---
+Task ID: FIELD-VEHICLES-DISASTER-FIXES
+Agent: main (fix field officer, add vehicles, disaster at point)
+Task: Fix field officer page issues, add Add Vehicle feature, add disaster-at-specific-point, verify route change flow
+
+Work Log:
+- Fixed Field Officer page: Added Logout button (was missing — user couldn't navigate back to login), expanded location options from 3 to 15+ (including all known locations), added "My Submitted Reports" section showing report status, added more incident types (Heavy Rain, Traffic, Accident)
+- Fixed Driver Mode: Added Logout button, added all vehicle status badges (Route Change Pending, Paused for Safety, Delivered, Ready, Loading)
+- Added "Add Vehicle" feature: Created AddVehicleModal component with Vehicle ID, Driver Name, Cargo Type, Home Location fields; added addVehicle action to store; added "Add Vehicle" button to Fleet page
+- Added "Inject Disaster at Map Point" feature: Added DisasterClickHandler to MapComponent that captures map clicks; added disaster injection overlay UI with type/severity/location form; added injectDisasterAtPoint action to store; button appears on all maps (Command Center, Route Optimizer, Live Map)
+- Fixed VehicleOverview: "View All" button now navigates to Fleet (was non-functional); added all vehicle status badges; added scrollable table with sticky header
+- Fixed "always shows on route": Increased default simulation speed from 1x to 4x so vehicles move faster and reach "Delivered" status sooner; VehicleOverview now shows all statuses correctly
+- Fixed disaster detection threshold: Increased from 35km to 50km so map-injected disasters are properly detected as affecting nearby routes
+
+End-to-End Verified:
+1. ✅ Field Officer: Login → submit report → see "My Submitted Reports" → logout
+2. ✅ Add Vehicle: Fleet → Add Vehicle → fill form → vehicle appears in fleet
+3. ✅ Inject Disaster at Point: Command Center → Inject Disaster → click map → choose type/severity → inject → incident appears in Incidents page
+4. ✅ Full reroute flow: Dispatch cargo → inject disaster on route → verify → assess impact → reroute recommendation → APPROVE REROUTE → driver sees alert → acknowledge → back to In Transit
+5. ✅ Vehicle statuses update correctly: Available → In Transit → (Route Change Pending/Paused for Safety) → In Transit → Delivered
+
+Stage Summary:
+- Field Officer page now has logout, more locations, and submitted reports view
+- Fleet page has Add Vehicle feature
+- Map has Inject Disaster at any point feature
+- Simulation runs at 4x speed by default for faster feedback
+- Disaster detection threshold increased to 50km for better map-click integration
+- All features verified working end-to-end

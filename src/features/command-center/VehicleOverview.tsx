@@ -11,13 +11,18 @@ export function VehicleOverview() {
       <CardHeader className="pb-3 border-b border-slate-800/50">
         <div className="flex items-center justify-between">
           <CardTitle className="text-sm">Active Vehicles Overview</CardTitle>
-          <button className="text-xs text-blue-400 hover:text-blue-300 transition-colors">View All</button>
+          <button
+            onClick={() => useAppStore.getState().setView('vehicles')}
+            className="text-xs text-blue-400 hover:text-blue-300 transition-colors"
+          >
+            View All →
+          </button>
         </div>
       </CardHeader>
       <CardContent className="p-0">
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto max-h-64 overflow-y-auto">
           <table className="w-full text-sm text-left">
-            <thead className="text-xs text-slate-400 bg-slate-900/50 border-b border-slate-800/50">
+            <thead className="text-xs text-slate-400 bg-slate-900/50 border-b border-slate-800/50 sticky top-0">
               <tr>
                 <th className="px-4 py-3 font-medium">Vehicle ID</th>
                 <th className="px-4 py-3 font-medium">Cargo</th>
@@ -28,8 +33,8 @@ export function VehicleOverview() {
             </thead>
             <tbody className="divide-y divide-slate-800/50">
               {vehicles.map((vehicle) => (
-                <tr 
-                  key={vehicle.id} 
+                <tr
+                  key={vehicle.id}
                   className="hover:bg-slate-800/30 transition-colors cursor-pointer"
                   onClick={() => selectVehicle(vehicle.id)}
                 >
@@ -49,8 +54,12 @@ export function VehicleOverview() {
                   <td className="px-4 py-3">
                     <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
                       vehicle.status === 'In Transit' ? 'bg-emerald-500/10 text-emerald-400' :
+                      vehicle.status === 'Route Change Pending' ? 'bg-orange-500/10 text-orange-400' :
+                      vehicle.status === 'Paused for Safety' ? 'bg-red-500/10 text-red-400' :
+                      vehicle.status === 'Delivered' ? 'bg-blue-500/10 text-blue-400' :
                       vehicle.status === 'Delayed' ? 'bg-red-500/10 text-red-400' :
-                      vehicle.status === 'Paused for Safety' ? 'bg-amber-500/10 text-amber-400' :
+                      vehicle.status === 'Ready' ? 'bg-cyan-500/10 text-cyan-400' :
+                      vehicle.status === 'Loading' ? 'bg-amber-500/10 text-amber-400' :
                       'bg-slate-500/10 text-slate-400'
                     }`}>
                       {vehicle.status}

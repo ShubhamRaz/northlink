@@ -2,14 +2,14 @@
 
 import React, { useEffect } from 'react';
 import { useAppStore } from '@/store/useAppStore';
-import { Truck, Navigation, AlertTriangle, CheckCircle2, Clock, MapPin, Package, Shield } from 'lucide-react';
+import { Truck, Navigation, AlertTriangle, CheckCircle2, Clock, MapPin, Package, Shield, LogOut } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/Card';
 import dynamic from 'next/dynamic';
 
 const Map = dynamic(() => import('@/features/command-center/MapComponent'), { ssr: false });
 
 export function DriverView() {
-  const { currentUserRole, currentDriverVehicleId, vehicles, shipments, alerts, acknowledgeRouteChange, setTrackedVehicleId } = useAppStore();
+  const { currentUserRole, currentDriverVehicleId, vehicles, shipments, alerts, acknowledgeRouteChange, setTrackedVehicleId, setView, setCurrentUserRole } = useAppStore();
 
   useEffect(() => {
     if (currentUserRole !== 'Driver') {
@@ -51,12 +51,23 @@ export function DriverView() {
             <span className="text-[10px] text-slate-400 uppercase tracking-wider">{myVehicle.driver}</span>
           </div>
         </div>
-        <div className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${
-          myVehicle.status === 'In Transit' ? 'bg-blue-500/20 text-blue-400' :
-          myVehicle.status === 'Delayed' ? 'bg-amber-500/20 text-amber-400' :
-          'bg-slate-700 text-slate-400'
-        }`}>
-          {myVehicle.status}
+        <div className="flex items-center gap-3">
+          <div className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${
+            myVehicle.status === 'In Transit' ? 'bg-blue-500/20 text-blue-400' :
+            myVehicle.status === 'Delayed' ? 'bg-amber-500/20 text-amber-400' :
+            myVehicle.status === 'Route Change Pending' ? 'bg-orange-500/20 text-orange-400' :
+            myVehicle.status === 'Paused for Safety' ? 'bg-red-500/20 text-red-400' :
+            'bg-slate-700 text-slate-400'
+          }`}>
+            {myVehicle.status}
+          </div>
+          <button
+            onClick={() => { setCurrentUserRole('Dispatcher'); setView('login'); }}
+            className="p-2 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 transition-colors"
+            title="Logout"
+          >
+            <LogOut className="w-4 h-4" />
+          </button>
         </div>
       </header>
 

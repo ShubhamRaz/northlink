@@ -1,12 +1,13 @@
 'use client';
 
-import React from 'react';
-import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet';
+import React, { useState } from 'react';
+import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap, useMapEvents } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import { useAppStore } from '@/store/useAppStore';
-import { RouteSegment } from '@/types';
+import { RouteSegment, Incident } from '@/types';
 import { useEffect } from 'react';
+import { AlertTriangle, X, MapPin } from 'lucide-react';
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
 const vehicleIcon = new L.Icon({
@@ -77,6 +78,18 @@ function MapFocusController() {
   return null;
 }
 
+// ── Disaster Injection: captures map clicks when in injection mode ──────────
+function DisasterClickHandler({ active, onClick }: { active: boolean; onClick: (coords: [number, number]) => void }) {
+  useMapEvents({
+    click: (e) => {
+      if (active) {
+        onClick([e.latlng.lat, e.latlng.lng]);
+      }
+    }
+  });
+  return null;
+}
+
 // ── Corridor colour ───────────────────────────────────────────────────────────
 function getCorridorColor(status: string) {
   switch (status) {
@@ -103,8 +116,29 @@ export default function MapComponent() {
     incidents, corridors, vehicles, deliveryPoints, shipments,
     activeMapLayers, selectVehicle, selectIncident, selectCorridor,
     journeyAnalysis, trackedVehicleId, setTrackedVehicleId,
-    selectedShipmentId
+    selectedShipmentId, injectDisasterAtPoint
   } = useAppStore();
+
+  // Disaster injection state
+  const [injectMode, setInjectMode] = useState(false);
+  const [pendingCoords, setPendingCoords] = useState<[number, number] | null>(null);
+  const [disasterForm, setDisasterForm] = useState({
+    type: 'Landslide' as Incident['type'],
+    severity: 'Critical' as Incident['severity'],
+    location: '',
+  });
+
+  const handleMapClick = (coords: [number, number]) => {
+    setPendingCoords(coords);
+    setDisasterForm(f => ({ ...f, location: `Map Point (${coords[0].toFixed(4)}, ${coords[1].toFixed(4)})` }));
+  };
+
+  const confirmDisaster = () => {
+    if (!pendingCoords) return;
+    injectDisasterAtPoint(pendingCoords, disasterForm.type, disasterForm.severity, disasterForm.location || `Map Point (${pendingCoords[0].toFixed(2)}, ${pendingCoords[1].toFixed(2)})`);
+    setInjectMode(false);
+    setPendingCoords(null);
+  };
 
   // Vehicles to render on map
   const visibleVehicles = trackedVehicleId
@@ -128,6 +162,89 @@ export default function MapComponent() {
     <div className="flex flex-col h-full w-full">
       {/* ── Map Canvas ── */}
       <div className="flex-1 rounded-t-xl overflow-hidden border border-slate-800 border-b-0 relative z-0" style={{ minHeight: '300px' }}>
+        {/* Disaster Injection Overlay */}
+        <div className="absolute top-3 right-3 z-[1000] flex flex-col gap-2 items-end">
+          {!injectMode ? (
+            <button
+              onClick={() => setInjectMode(true)}
+              className="flex items-center gap-2 px-3 py-2 bg-red-600 hover:bg-red-500 text-white text-xs font-bold rounded-lg shadow-lg transition-colors"
+            >
+              <AlertTriangle className="w-4 h-4" /> Inject Disaster
+            </button>
+          ) : (
+            <div className="bg-slate-900/95 border border-red-500/50 rounded-xl p-4 shadow-2xl w-72">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-bold text-red-400 flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4" /> Disaster Injection
+                </h3>
+                <button onClick={() => { setInjectMode(false); setPendingCoords(null); }} className="text-slate-500 hover:text-slate-200">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <p className="text-[10px] text-slate-400 mb-3">
+                {pendingCoords ? 'Click confirm to inject at selected point.' : 'Click on the map to select a location.'}
+              </p>
+              <div className="space-y-2">
+                <div>
+                  <label className="text-[10px] text-slate-500 uppercase font-bold block mb-1">Type</label>
+                  <select
+                    value={disasterForm.type}
+                    onChange={e => setDisasterForm(f => ({ ...f, type: e.target.value as Incident['type'] }))}
+                    className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-slate-200"
+                  >
+                    <option>Landslide</option>
+                    <option>Flood</option>
+                    <option>Road Blockage</option>
+                    <option>Bridge Damage</option>
+                    <option>Heavy Rain</option>
+                    <option>Traffic</option>
+                    <option>Accident</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] text-slate-500 uppercase font-bold block mb-1">Severity</label>
+                  <select
+                    value={disasterForm.severity}
+                    onChange={e => setDisasterForm(f => ({ ...f, severity: e.target.value as Incident['severity'] }))}
+                    className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-slate-200"
+                  >
+                    <option>Low</option>
+                    <option>Medium</option>
+                    <option>High</option>
+                    <option>Critical</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] text-slate-500 uppercase font-bold block mb-1">Location Label</label>
+                  <input
+                    type="text"
+                    value={disasterForm.location}
+                    onChange={e => setDisasterForm(f => ({ ...f, location: e.target.value }))}
+                    placeholder="e.g. NH-102 near Imphal"
+                    className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-slate-200"
+                  />
+                </div>
+                {pendingCoords && (
+                  <div className="text-[10px] text-blue-400 font-mono flex items-center gap-1">
+                    <MapPin className="w-3 h-3" /> {pendingCoords[0].toFixed(4)}, {pendingCoords[1].toFixed(4)}
+                  </div>
+                )}
+                <button
+                  onClick={confirmDisaster}
+                  disabled={!pendingCoords}
+                  className="w-full py-2 bg-red-600 hover:bg-red-500 disabled:bg-slate-700 disabled:text-slate-500 text-white text-xs font-bold rounded transition-colors"
+                >
+                  {pendingCoords ? 'Inject Disaster' : 'Click map to set point'}
+                </button>
+              </div>
+            </div>
+          )}
+          {injectMode && !pendingCoords && (
+            <div className="bg-red-950/80 border border-red-500/50 rounded-lg px-3 py-1.5 text-[10px] text-red-300 font-medium animate-pulse">
+              Click anywhere on the map...
+            </div>
+          )}
+        </div>
         <MapContainer
           center={[25.5, 92.5]}
           zoom={7}
@@ -139,6 +256,19 @@ export default function MapComponent() {
             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
           />
           <MapFocusController />
+          <DisasterClickHandler active={injectMode} onClick={handleMapClick} />
+
+          {/* Pending disaster marker */}
+          {pendingCoords && (
+            <Marker position={pendingCoords} icon={incidentIcon}>
+              <Popup>
+                <div className="text-slate-900">
+                  <h3 className="font-bold text-sm text-red-600">Pending Disaster</h3>
+                  <p className="text-xs">{pendingCoords[0].toFixed(4)}, {pendingCoords[1].toFixed(4)}</p>
+                </div>
+              </Popup>
+            </Marker>
+          )}
 
           {/* All vehicle route paths (faint, always visible) */}
           {activeMapLayers.includes('Vehicles') && vehicleRoutes.map(({ vehicleId, coords, color }) => (

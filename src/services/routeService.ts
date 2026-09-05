@@ -209,7 +209,7 @@ function buildGeometryRoute(
   const trafficDelay = simulationMode === 'TRAFFIC SURGE' ? Math.round(baseEta * 0.25) : 0;
   const relevantIncidents = incidents.filter(incident =>
     incident.verificationStatus === 'VERIFIED' && incident.resolutionStatus === 'UNRESOLVED' &&
-    nearestDistanceKm(incident.coordinates, geometry.coordinates) <= 35
+    nearestDistanceKm(incident.coordinates, geometry.coordinates) <= 50
   );
   const incidentRisk = Math.min(0.75, relevantIncidents.reduce((sum, incident) => {
     if (incident.type === 'Landslide' || incident.type === 'Road Blockage' || incident.type === 'Bridge Damage') return sum + 0.45;
