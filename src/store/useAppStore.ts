@@ -98,7 +98,7 @@ interface AppState {
   resolveIncident: (id: string) => void;
   rejectIncident: (id: string) => void;
   assessIncidentImpact: (incidentId: string) => Promise<void>;
-  decideMidJourneyRoute: (shipmentId: string, decision: 'CHANGE' | 'KEEP', routeId?: string) => void;
+  decideMidJourneyRoute: (shipmentId: string, decision: 'CHANGE' | 'KEEP', routeId?: string) => Promise<void>;
   recordAuditEvent: (event: Omit<AuditEvent, 'id' | 'timestamp' | 'actorRole'> & { actorRole?: AuditEvent['actorRole'] }) => void;
 
   // 3. System & Legacy
@@ -658,7 +658,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  decideMidJourneyRoute: (shipmentId, decision, routeId) => {
+  decideMidJourneyRoute: async (shipmentId, decision, routeId) => {
     const state = get();
     if (state.currentUserRole !== 'Dispatcher' && state.currentUserRole !== 'Admin') return;
     const shipment = state.shipments.find(s => s.id === shipmentId);
@@ -666,32 +666,56 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!shipment || !rec) return;
 
     if (decision === 'CHANGE' && routeId) {
-      const newRoute = rec.alternativeRoutes.find(r => r.id === routeId);
-      if (!newRoute) return;
+      const selectedRoute = rec.alternativeRoutes.find(r => r.id === routeId);
+      if (!selectedRoute) return;
+
+      // Get the vehicle's current position — the new route must start FROM HERE,
+      // not from the original origin. This is the key fix: when a cargo is at 50km
+      // of a 100km route and a disaster is at 75km, the reroute must go from 50km
+      // to the destination, NOT from the origin again.
+      const vehicle = state.vehicles.find(v => v.id === shipment.assignedVehicleId);
+      const destination = resolveLocationCoordinates(shipment.destination);
+      if (!vehicle || !destination) return;
+
+      // Use the dispatcher's selected alternative route, but slice it from the
+      // vehicle's current position so it doesn't go back to the origin.
+      // This is instant (no OSRM calls) and follows real roads.
+      let finalRoute: RouteAlternative = selectedRoute;
+      let finalGeometry: [number, number][];
+
+      // Find the nearest point on the selected route to the vehicle's current position
+      const nearIdx = nearestRouteIndex(vehicle.coordinates, selectedRoute.coordinates);
+      // Slice from the nearest point onwards — this is the remaining route
+      finalGeometry = selectedRoute.coordinates.slice(nearIdx);
+      // Prepend the vehicle's exact current position for smooth movement
+      finalGeometry = [vehicle.coordinates, ...finalGeometry];
 
       const hist: DecisionHistory = {
         id: 'DEC-' + Math.random().toString(36).substring(7),
         timestamp: new Date().toLocaleTimeString(),
         shipmentId,
-        selectedRouteId: newRoute.id,
+        selectedRouteId: finalRoute.id,
         candidateRoutes: rec.alternativeRoutes,
         trigger: 'Mid-Journey Reroute',
         reason: rec.reason,
         decisionType: 'MID_JOURNEY_REROUTE',
         approvedBy: state.currentUserRole,
-        risk: newRoute.risk,
-        eta: `${Math.floor(newRoute.currentEta / 60)}h ${newRoute.currentEta % 60}m`
+        risk: finalRoute.risk,
+        eta: `${Math.floor(finalRoute.currentEta / 60)}h ${finalRoute.currentEta % 60}m`
       };
 
       set(s => ({
         decisionHistory: [hist, ...s.decisionHistory],
-        // Mark ALL active recommendations for this shipment as APPROVED (not just one)
+        // Mark ALL active recommendations for this shipment as APPROVED
         routeRecommendations: s.routeRecommendations.map(r => r.shipmentId === shipmentId && r.status === 'ACTIVE' ? { ...r, status: 'APPROVED' } : r),
-        shipments: s.shipments.map(sh => sh.id === shipmentId ? { ...sh, routeId: newRoute.id, status: 'Route Change Pending', eta: hist.eta || sh.eta } : sh),
+        shipments: s.shipments.map(sh => sh.id === shipmentId ? { ...sh, routeId: finalRoute.id, status: 'Route Change Pending', eta: hist.eta || sh.eta } : sh),
         vehicles: s.vehicles.map(v => v.id === shipment.assignedVehicleId ? {
           ...v,
-          currentRouteId: newRoute.id,
-          currentRouteGeometry: [v.coordinates, ...newRoute.coordinates],
+          currentRouteId: finalRoute.id,
+          // The new route geometry starts from the vehicle's CURRENT position,
+          // NOT from the origin. progress is reset to 0 because the vehicle
+          // is at the start of this new route.
+          currentRouteGeometry: finalGeometry,
           progressMinutes: 0,
           progress: 0,
           status: 'Route Change Pending',
@@ -700,16 +724,15 @@ export const useAppStore = create<AppState>((set, get) => ({
       }));
 
       import('@/services/alertService').then(({ alertService }) => {
-        alertService.triggerRouteChangeAlert(shipment.id, shipment.assignedVehicleId!, newRoute.name, 'Dispatcher Approved Reroute');
+        alertService.triggerRouteChangeAlert(shipment.id, shipment.assignedVehicleId!, finalRoute.name, 'Dispatcher Approved Reroute');
       });
-      state.refreshJourneyAnalysis();
       get().recordAuditEvent({
-        eventType: 'REROUTE_APPROVED', entityType: 'ROUTE', entityId: newRoute.id,
+        eventType: 'REROUTE_APPROVED', entityType: 'ROUTE', entityId: finalRoute.id,
         shipmentId, vehicleId: shipment.assignedVehicleId,
-        action: 'Dispatcher approved route change', previousState: shipment.routeId, nextState: newRoute.id,
+        action: 'Dispatcher approved route change', previousState: shipment.routeId, nextState: finalRoute.id,
         reason: rec.reason
       });
-      get().addEvent({ message: `Dispatcher changed route for ${shipmentId} to ${newRoute.name}. Waiting for driver acknowledgment.`, type: 'success' });
+      get().addEvent({ message: `Dispatcher changed route for ${shipmentId} to ${finalRoute.name}. New route starts from vehicle's current position. Waiting for driver acknowledgment.`, type: 'success' });
       void get().persistShipments();
       get().persistVehicles();
       
