@@ -44,9 +44,12 @@ export function OptimizerView() {
   const bestRoute = activeRoutes.find(r => r.isFeasible);
   const activeShipment = shipments.find(s => s.id === selectedShipment);
   const isReady = activeShipment?.status === 'Ready';
+  const isPlanned = activeShipment?.status === 'Planned';
   const hasApprovedRoute = !!activeShipment?.routeId;
   const isAwaitingDispatch = hasApprovedRoute && isReady;
-  const canAnalyze = isReady;
+  // Allow analysis for Ready OR Planned shipments. Planned shipments will be
+  // auto-marked Ready when analyzed (markCargoReady triggers analysis internally).
+  const canAnalyze = isReady || isPlanned;
 
   const formatEta = (minutes: number) => {
     return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
@@ -141,20 +144,22 @@ export function OptimizerView() {
                 })()}
 
                 <button
-                  onClick={() => canAnalyze && analyzeRoutesForReadyShipment(selectedShipment)}
+                  onClick={() => {
+                    if (!canAnalyze) return;
+                    if (isPlanned) {
+                      // Auto-mark cargo ready, which triggers route analysis internally
+                      markCargoReady(selectedShipment);
+                    } else {
+                      analyzeRoutesForReadyShipment(selectedShipment);
+                    }
+                  }}
                   disabled={!canAnalyze}
-                  className="w-full flex items-center justify-center gap-2 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded text-sm font-medium transition-colors"
+                  className="w-full flex items-center justify-center gap-2 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:text-slate-500 text-white rounded text-sm font-medium transition-colors"
                 >
-                  <Zap className="w-4 h-4" /> {canAnalyze ? 'ANALYZE ROUTES' : activeShipment?.status === 'Planned' ? 'CARGO NOT READY' : 'ANALYSIS UNAVAILABLE'}
+                  <Zap className="w-4 h-4" /> {canAnalyze ? (isPlanned ? 'MARK READY & ANALYZE' : 'ANALYZE ROUTES') : 'ANALYSIS UNAVAILABLE'}
                 </button>
-                {activeShipment?.status === 'Planned' && (
-                  <button
-                    onClick={() => markCargoReady(selectedShipment)}
-                    className="w-full flex items-center justify-center gap-2 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-sm font-medium transition-colors"
-                  >
-                    <CheckCircle className="w-4 h-4" /> CARGO READY
-                  </button>
-                )}
+                {/* The MARK READY & ANALYZE button above handles the Planned → Ready → Analyze flow,
+                    so we don't need a separate CARGO READY button here. */}
               </CardContent>
             </Card>
 
