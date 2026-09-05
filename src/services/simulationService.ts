@@ -5,7 +5,8 @@ class SimulationEngine {
   private tickInterval: NodeJS.Timeout | null = null;
   private isRunning = false;
   private playbackSpeed = 1;
-  private TICK_MS = 2000; // 2 seconds per tick (was 1s) to reduce UI load
+  private TICK_MS = 2000; // 2 seconds per tick
+  private tickCount = 0; // Counter to throttle expensive checks
   
   start() {
     if (this.isRunning) return;
@@ -45,6 +46,7 @@ class SimulationEngine {
     const state = useAppStore.getState();
     if (!state.networkOnline) return;
 
+    this.tickCount++;
     const simulatedMinutesElapsed = 1 * this.playbackSpeed;
 
     // Move all active shipments
@@ -70,13 +72,14 @@ class SimulationEngine {
 
       // ── AUTO-DETECT: check if any verified, unresolved incident is close
       // ahead on the current route and auto-trigger impact assessment.
-      // Only trigger if there's NO ACTIVE recommendation for this shipment
-      // (APPROVED/REJECTED recommendations from previous incidents don't block
-      // detection of NEW incidents on the new route).
-      const hasPendingRec = state.routeRecommendations.some(
-        r => r.shipmentId === shipment.id && r.status === 'ACTIVE'
-      );
-      if (!hasPendingRec && vehicle.currentRouteGeometry?.length && shipment.routeId) {
+      // THROTTLED: only check every 3 ticks (6 seconds) to avoid freezing
+      // the browser with expensive distance calculations on 10,000+ point routes.
+      // Only trigger if there's NO ACTIVE recommendation for this shipment.
+      if (this.tickCount % 3 === 0) {
+        const hasPendingRec = state.routeRecommendations.some(
+          r => r.shipmentId === shipment.id && r.status === 'ACTIVE'
+        );
+        if (!hasPendingRec && vehicle.currentRouteGeometry?.length && shipment.routeId) {
         // Find incidents that are ahead on the CURRENT route (not already-handled ones)
         const nearestIncident = state.incidents.find(inc => {
           if (inc.verificationStatus !== 'VERIFIED' || inc.resolutionStatus !== 'UNRESOLVED') return false;
@@ -107,6 +110,7 @@ class SimulationEngine {
           // Trigger impact assessment automatically
           void useAppStore.getState().assessIncidentImpact(nearestIncident.id);
           return;
+        }
         }
       }
 
@@ -251,14 +255,20 @@ class SimulationEngine {
 
   /**
    * Computes the minimum haversine distance (km) from a point to any vertex
-   * on the given route geometry. Used to detect whether an incident is close
-   * enough to a vehicle's active route to warrant a safety pause.
+   * on the given route geometry. Uses downsampling for performance: with 10,000+
+   * route points, checking every point on every tick would freeze the browser.
+   * We sample every Nth point (where N keeps total checks under 200).
    */
   private pointToRouteDistance(point: [number, number], geometry: [number, number][]): number {
+    if (geometry.length === 0) return Number.POSITIVE_INFINITY;
+    // Downsample: check at most 200 points
+    const step = Math.max(1, Math.floor(geometry.length / 200));
     let min = Number.POSITIVE_INFINITY;
-    for (const c of geometry) {
-      const d = this.haversineKm(point, c);
+    for (let i = 0; i < geometry.length; i += step) {
+      const d = this.haversineKm(point, geometry[i]);
       if (d < min) min = d;
+      // Early exit if we find a very close point
+      if (min < 5) return min;
     }
     return min;
   }

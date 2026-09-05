@@ -502,3 +502,47 @@ Verified:
 3. ✅ First disaster → reroute recommendation → approve → driver ack → vehicle moves
 4. ✅ Second disaster detected as new incident
 5. ✅ Lint: 0 errors
+
+---
+Task ID: FREEZE-FIX-COMPREHENSIVE
+Agent: main (fix disaster freeze, test all features, debug all issues)
+Task: Fix website freeze when adding disaster in command center, test all features, find and fix all bugs
+
+Root Cause Analysis:
+The freeze was caused by THREE performance issues working together:
+
+1. pointToRouteDistance: Iterated over ALL 10,000+ route points with haversine calculations on EVERY simulation tick (every 2 seconds). This is O(incidents × route_points) = extremely expensive.
+
+2. nearestRouteIndex in assessIncidentImpact: Also iterated over all 10,000+ route points using reduce(), called on every impact assessment.
+
+3. assessIncidentImpact calling generateRoutesAsync: For subsequent incidents, made 3 OSRM API calls (each 10+ seconds) that blocked the main thread.
+
+Fixes Applied:
+1. Downsampled pointToRouteDistance: Instead of checking all 10,000+ points, samples every Nth point (keeping total under 200 checks). Added early exit if a very close point (< 5km) is found. This reduces computation by 50x.
+
+2. Downsampled nearestRouteIndex: Same downsampling approach — checks at most 200 points instead of all 10,000+.
+
+3. Throttled auto-detection: The simulation now only checks for incidents every 3 ticks (6 seconds) instead of every tick (2 seconds). Added tickCount counter.
+
+4. Removed OSRM calls from assessIncidentImpact: Always uses existing activeRoutes (already loaded with OSRM routes during initial analysis). No more generateRoutesAsync calls during impact assessment.
+
+Verified End-to-End:
+1. ✅ Dispatched cargo → no freeze
+2. ✅ Injected FIRST disaster in Command Center → NO FREEZE (page responsive)
+3. ✅ Assessed first disaster → completed in 3 seconds (was 30+ seconds/hang)
+4. ✅ Reroute recommendation appeared: "Road alternative 2"
+5. ✅ Approved reroute → driver acknowledged → vehicle back to IN TRANSIT
+6. ✅ Injected SECOND disaster → NO FREEZE (page responsive)
+7. ✅ Assessed second disaster → completed in 3 seconds
+8. ✅ Second reroute recommendation appeared: "Road alternative 1"
+9. ✅ Approved second reroute → driver acknowledged → vehicle back to IN TRANSIT
+10. ✅ After 10s: vehicle STILL IN TRANSIT at 35-42 km/h, ETA decreasing (10h 4m → 10h 0m)
+11. ✅ Lint: 0 errors
+
+Stage Summary:
+- No more freeze when adding disasters in Command Center
+- Impact assessment is instant (3 seconds, was 30+ seconds/hang)
+- Multiple disasters work correctly (each triggers a new reroute)
+- Vehicle stays moving after reroute approvals
+- Simulation throttled to reduce CPU load
+- Route distance checks downsampled by 50x

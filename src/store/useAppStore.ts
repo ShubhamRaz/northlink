@@ -143,9 +143,21 @@ function haversineKm(a: [number, number], b: [number, number]): number {
   return 6371 * 2 * Math.atan2(Math.sqrt(value), Math.sqrt(1 - value));
 }
 
+// Downsampled nearest route index: checks at most 200 points for performance.
+// With 10,000+ route points, checking every point would freeze the browser.
 function nearestRouteIndex(point: [number, number], geometry: [number, number][]): number {
-  return geometry.reduce((nearestIndex, coordinate, index) =>
-    haversineKm(point, coordinate) < haversineKm(point, geometry[nearestIndex]) ? index : nearestIndex, 0);
+  if (geometry.length === 0) return 0;
+  const step = Math.max(1, Math.floor(geometry.length / 200));
+  let nearestIndex = 0;
+  let nearestDist = haversineKm(point, geometry[0]);
+  for (let i = 0; i < geometry.length; i += step) {
+    const d = haversineKm(point, geometry[i]);
+    if (d < nearestDist) {
+      nearestDist = d;
+      nearestIndex = i;
+    }
+  }
+  return nearestIndex;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -591,37 +603,11 @@ export const useAppStore = create<AppState>((set, get) => ({
           });
         }
 
-        // Use the EXISTING activeRoutes for the FIRST incident detection.
-        // For subsequent incidents (after a reroute), regenerate routes from
-        // the vehicle's current position to the destination so the alternatives
-        // reflect the new route context. Use a 15-second timeout to avoid
-        // hanging the browser if OSRM is slow.
-        let alternatives: RouteAlternative[];
-        const hasPriorRec = state.routeRecommendations.some(r => r.shipmentId === shipment.id);
-        if (hasPriorRec && vehicle.coordinates) {
-          // Regenerate routes from current vehicle position with a timeout
-          try {
-            const destination = resolveLocationCoordinates(shipment.destination);
-            if (destination) {
-              // Race the OSRM call against a 15-second timeout
-              const routesPromise = generateRoutesAsync(shipment, get().incidents, state.simulationMode, vehicle.coordinates, destination);
-              const timeoutPromise = new Promise<RouteAlternative[]>((resolve) =>
-                setTimeout(() => resolve([]), 15000)
-              );
-              alternatives = await Promise.race([routesPromise, timeoutPromise]);
-              if (alternatives.length === 0) {
-                // Timeout — use existing routes
-                alternatives = state.activeRoutes;
-              }
-            } else {
-              alternatives = state.activeRoutes;
-            }
-          } catch {
-            alternatives = state.activeRoutes;
-          }
-        } else {
-          alternatives = state.activeRoutes;
-        }
+        // Use the EXISTING activeRoutes for ALL incident detections.
+        // This avoids making OSRM API calls during impact assessment, which
+        // was causing the browser to freeze. The activeRoutes are already
+        // loaded with road-following OSRM routes during the initial analysis.
+        const alternatives = state.activeRoutes;
         const currentRouteAlt = alternatives.find(a => a.id === shipment.routeId);
         // Prefer feasible OSRM routes, then feasible fallbacks, then least-risky overall.
         // This ensures the recommended route follows real roads when available.
