@@ -8,7 +8,7 @@ import {
   mockVehicles, mockShipments, mockIncidents,
   mockCorridors, mockDistricts, mockDeliveryPoints, mockAlerts
 } from '@/data/mockData';
-import { generateRoutesAsync, resolveLocationCoordinates } from '@/services/routeService';
+import { generateRoutesAsync, resolveLocationCoordinates, reassessRemainingJourney } from '@/services/routeService';
 import { predictCorridorRisk } from '@/services/riskService';
 import { determineAccessibility } from '@/services/accessibilityService';
 
@@ -603,17 +603,28 @@ export const useAppStore = create<AppState>((set, get) => ({
           });
         }
 
-        // Use the EXISTING activeRoutes for ALL incident detections.
-        // This avoids making OSRM API calls during impact assessment, which
-        // was causing the browser to freeze. The activeRoutes are already
-        // loaded with road-following OSRM routes during the initial analysis.
-        const alternatives = state.activeRoutes;
-        const currentRouteAlt = alternatives.find(a => a.id === shipment.routeId);
-        // Prefer feasible OSRM routes, then feasible fallbacks, then least-risky overall.
-        // This ensures the recommended route follows real roads when available.
-        const feasibleOsrm = alternatives.find(a => a.isFeasible && a.id !== shipment.routeId && a.coordinates.length > 100);
-        const feasibleAny = alternatives.find(a => a.isFeasible && a.id !== shipment.routeId);
-        const bestRoute = feasibleOsrm || feasibleAny || alternatives.slice().sort((a, b) => a.risk - b.risk)[0];
+        // TRUE CURRENT-POSITION REROUTING
+        // Fetch new candidate routes starting from the vehicle's CURRENT GPS coordinates
+        // to the original destination.
+        let alternatives: RouteAlternative[] = [];
+        try {
+          alternatives = await reassessRemainingJourney(
+            shipment,
+            vehicle.coordinates,
+            get().incidents,
+            get().simulationMode
+          );
+        } catch (error) {
+          console.error("Failed to reassess journey:", error);
+          // Fallback if the router fails completely, but usually it returns at least a prototype
+          alternatives = state.activeRoutes;
+        }
+
+        const currentRouteAlt = state.activeRoutes.find(a => a.id === shipment.routeId);
+        
+        // Find the best fresh alternative
+        const feasibleOsrm = alternatives.find(a => a.isFeasible && a.coordinates.length > 2);
+        const bestRoute = feasibleOsrm || alternatives.slice().sort((a, b) => a.risk - b.risk)[0];
         
         if (bestRoute) {
           const allBlocked = !alternatives.some(a => a.isFeasible);
@@ -677,18 +688,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       const destination = resolveLocationCoordinates(shipment.destination);
       if (!vehicle || !destination) return;
 
-      // Use the dispatcher's selected alternative route, but slice it from the
-      // vehicle's current position so it doesn't go back to the origin.
-      // This is instant (no OSRM calls) and follows real roads.
-      let finalRoute: RouteAlternative = selectedRoute;
-      let finalGeometry: [number, number][];
-
-      // Find the nearest point on the selected route to the vehicle's current position
-      const nearIdx = nearestRouteIndex(vehicle.coordinates, selectedRoute.coordinates);
-      // Slice from the nearest point onwards — this is the remaining route
-      finalGeometry = selectedRoute.coordinates.slice(nearIdx);
-      // Prepend the vehicle's exact current position for smooth movement
-      finalGeometry = [vehicle.coordinates, ...finalGeometry];
+      // TRUE CURRENT-POSITION REROUTING:
+      // The selected route was generated fresh from the vehicle's current GPS position.
+      // We DO NOT slice it. We use the exact geometry OSRM returned for the remaining journey.
+      const finalRoute: RouteAlternative = selectedRoute;
+      const finalGeometry = selectedRoute.coordinates;
 
       const hist: DecisionHistory = {
         id: 'DEC-' + Math.random().toString(36).substring(7),

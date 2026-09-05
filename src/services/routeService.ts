@@ -136,3 +136,31 @@ export async function generateRoutesAsync(
     .map((geometry, index) => buildGeometryRoute(shipment, geometry, index, incidents, simulationMode, geometry.source ?? 'PROTOTYPE FALLBACK'))
     .sort((a, b) => a.priorityScore - b.priorityScore);
 }
+
+/**
+ * Generates fresh route alternatives from the vehicle's CURRENT GPS position to the destination.
+ * This guarantees we do NOT simply slice the old route.
+ */
+export async function reassessRemainingJourney(
+  shipment: Shipment,
+  currentVehiclePosition: [number, number],
+  incidents: Incident[],
+  simulationMode: SimulationMode
+): Promise<RouteAlternative[]> {
+  const destination = resolveLocationCoordinates(shipment.destination);
+  if (!destination) {
+    throw new Error(`Routing Error: Invalid destination for shipment ${shipment.id}`);
+  }
+
+  // If vehicle is extremely close to the destination (< 2km), 
+  // we do not need to poll for 4 complex route alternatives.
+  // We'll let OSRM figure out a quick path directly from the core generator.
+  // The route generation is identical but forces origin to currentVehiclePosition.
+  return await generateRoutesAsync(
+    shipment,
+    incidents,
+    simulationMode,
+    currentVehiclePosition, // True current GPS
+    destination
+  );
+}

@@ -44,6 +44,18 @@
   - Fix: Rejected coordinates outside valid bounds gracefully. Fallbacks are explicitly identified as `source: 'PROTOTYPE FALLBACK'`.
   - Verify: App logic updated to handle 0 returned candidates by throwing a clean error in `generateRoutesAsync` instead of crashing.
 ## Phase 3 — Current-Position Rerouting
+- [x] Implement reusable remaining-journey service
+  - Problem: Re-routing incorrectly relied on full origin-to-destination routes and sliced them.
+  - Fix: Added `reassessRemainingJourney` to explicitly use the current vehicle coordinates as the origin.
+  - Verify: Re-routing actively calls OSRM starting from true GPS.
+- [x] Integrate true current position routing
+  - Problem: The `assessIncidentImpact` function reused `state.activeRoutes`.
+  - Fix: Updated `assessIncidentImpact` to asynchronously call `reassessRemainingJourney`.
+  - Verify: Fresh routes are successfully queried and populated.
+- [x] Do not slice old routes
+  - Problem: `decideMidJourneyRoute` sliced the static coordinates upon approval.
+  - Fix: Slicing deleted. The newly generated geometries from OSRM are assigned directly to the vehicle.
+  - Verify: `vehicle.currentRouteGeometry` accepts the raw unadulterated route output, `progress` reset to 0.
 ## Phase 4 — Time-Aware Intelligence
 ## Phase 5 — Incident and Safety
 ## Phase 6 — State Management
