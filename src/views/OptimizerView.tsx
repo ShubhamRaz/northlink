@@ -16,24 +16,16 @@ export function OptimizerView() {
   const [showOverride, setShowOverride] = useState(false);
   const [activeTab, setActiveTab] = useState<'routes' | 'journey'>('journey');
 
-  // Initialize from the store's selected shipment (set by createShipment or priority list clicks),
-  // falling back to the first available shipment.
-  const [selectedShipment, setSelectedShipment] = useState(
-    selectedShipmentId || shipments[0]?.id || 'MED-204'
-  );
+  // Use the store's selected shipment id, falling back to the first available shipment.
+  const selectedShipment = selectedShipmentId || shipments[0]?.id || 'MED-204';
 
-  // Keep local selection in sync if the store selection changes (e.g. after Add Cargo)
+  // Sync the store selection ONLY when the local value differs from the store.
+  // Guarded to avoid infinite loops (we only set the store, never read it back into local state).
   useEffect(() => {
-    if (selectedShipmentId && selectedShipmentId !== selectedShipment) {
-      queueMicrotask(() => setSelectedShipment(selectedShipmentId));
-    }
-  }, [selectedShipmentId, selectedShipment]);
-
-  useEffect(() => {
-    if (selectedShipment) {
+    if (selectedShipment && selectedShipment !== selectedShipmentId) {
       selectShipment(selectedShipment);
     }
-  }, [selectedShipment, selectShipment]);
+  }, [selectedShipment, selectedShipmentId, selectShipment]);
 
   const bestRoute = activeRoutes.find(r => r.isFeasible);
   const activeShipment = shipments.find(s => s.id === selectedShipment);
@@ -103,7 +95,7 @@ export function OptimizerView() {
                   <select
                     className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-sm text-slate-200"
                     value={selectedShipment}
-                    onChange={(e) => setSelectedShipment(e.target.value)}
+                    onChange={(e) => selectShipment(e.target.value)}
                   >
                     {shipments.map(s => (
                       <option key={s.id} value={s.id}>{s.id} - {s.cargoType}</option>

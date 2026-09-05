@@ -21,7 +21,7 @@ export function AppInitializer() {
       if (localVehicles) {
         const parsed = JSON.parse(localVehicles);
         if (parsed && Array.isArray(parsed.vehicles) && Array.isArray(parsed.activeRoutes)) {
-          useAppStore.getState().hydrateVehicles(parsed.vehicles, parsed.activeRoutes);
+          useAppStore.getState().hydrateVehicles(parsed.vehicles, parsed.activeRoutes, parsed.routeRecommendations);
         }
       }
     } catch {

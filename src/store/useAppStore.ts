@@ -127,7 +127,7 @@ interface AppState {
   hydrateShipments: (shipments: Shipment[]) => void;
   persistShipments: () => Promise<void>;
   persistVehicles: () => void;
-  hydrateVehicles: (vehicles: Vehicle[], activeRoutes: RouteAlternative[]) => void;
+  hydrateVehicles: (vehicles: Vehicle[], activeRoutes: RouteAlternative[], routeRecommendations?: RouteRecommendation[]) => void;
   addVehicle: (vehicle: Vehicle) => void;
   injectDisasterAtPoint: (coordinates: [number, number], type: Incident['type'], severity: Incident['severity'], location: string) => void;
 }
@@ -259,7 +259,22 @@ export const useAppStore = create<AppState>((set, get) => ({
   }),
 
   selectVehicle: (id) => set({ selectedVehicleId: id, selectedShipmentId: null, selectedIncidentId: null, selectedCorridorId: null }),
-  selectShipment: (id) => set({ selectedShipmentId: id, selectedVehicleId: null, selectedIncidentId: null, selectedCorridorId: null, journeyAnalysis: null }),
+  selectShipment: (id) => set((state) => {
+    // When switching shipments, clear the previous shipment's route analysis
+    // so we don't show stale routes. Keep vehicle route geometry intact so
+    // in-transit vehicles still render on the map.
+    const isSameShipment = state.selectedShipmentId === id;
+    if (isSameShipment) return {};
+    return {
+      selectedShipmentId: id,
+      selectedVehicleId: null,
+      selectedIncidentId: null,
+      selectedCorridorId: null,
+      journeyAnalysis: null,
+      // Only clear activeRoutes if the new shipment is not the one that owns them
+      activeRoutes: state.shipments.find(s => s.id === id)?.routeId ? state.activeRoutes : [],
+    };
+  }),
   selectIncident: (id) => set({ selectedIncidentId: id, selectedVehicleId: null, selectedShipmentId: null, selectedCorridorId: null }),
   selectCorridor: (id) => set({ selectedCorridorId: id, selectedVehicleId: null, selectedShipmentId: null, selectedIncidentId: null }),
 
@@ -524,14 +539,20 @@ export const useAppStore = create<AppState>((set, get) => ({
     set(s => ({ incidents: s.incidents.map(i => i.id === incidentId ? { ...i, status: 'Unresolved', impactAssessment: { assessedAt: timeNow, affectedShipmentIds: [], affectsRemainingRoute: false, recommendedAction: 'MONITOR' } } : i) }));
 
     const affectedShipments = state.shipments.filter(s => {
-      if (s.status !== 'In Transit') return false;
+      // Include shipments that are in transit OR were auto-paused by the safety system
+      if (s.status !== 'In Transit' && s.status !== 'Route Change Pending' && s.status !== 'Paused for Safety') return false;
       const vehicle = state.vehicles.find(v => v.id === s.assignedVehicleId);
-      if (!vehicle || !vehicle.currentRouteId) return false;
+      if (!vehicle || !vehicle.currentRouteId) {
+        console.log('[assessIncidentImpact] skipping', s.id, '- no vehicle or route. status:', s.status, 'vehicleId:', s.assignedVehicleId);
+        return false;
+      }
       if (vehicle.currentRouteGeometry?.length) {
         const vehicleIndex = nearestRouteIndex(vehicle.coordinates, vehicle.currentRouteGeometry);
         const incidentIndex = nearestRouteIndex(incident.coordinates, vehicle.currentRouteGeometry);
         const distToRoute = haversineKm(incident.coordinates, vehicle.currentRouteGeometry[incidentIndex]);
-        return incidentIndex > vehicleIndex && distToRoute <= 50;
+        const affected = incidentIndex > vehicleIndex && distToRoute <= 50;
+        console.log('[assessIncidentImpact]', s.id, 'vIdx:', vehicleIndex, 'iIdx:', incidentIndex, 'distKm:', distToRoute.toFixed(1), 'affected:', affected);
+        return affected;
       }
       const activeRoute = state.activeRoutes.find(r => r.id === vehicle.currentRouteId);
       return Boolean(activeRoute?.corridorIds.includes(incident.affectedCorridorId ?? ''));
@@ -548,7 +569,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     } : i) }));
 
     if (affectedShipments.length > 0) {
-      get().recalculateNetwork();
+      // Recalculate corridor risk/accessibility WITHOUT marking active recommendations stale
+      // (recalculateNetwork would mark our new recommendation as STALE in a circular loop).
+      const updatedCorridors = get().corridors.map(corridor => {
+        const riskPred = predictCorridorRisk(corridor, get().incidents, get().simulationMode);
+        const accessibility = determineAccessibility(corridor, riskPred, get().incidents);
+        return { ...corridor, risk: Math.round(riskPred.probability * 100), accessibility };
+      });
+      set({ corridors: updatedCorridors });
 
       for (const shipment of affectedShipments) {
         const vehicle = state.vehicles.find(item => item.id === shipment.assignedVehicleId);
@@ -595,6 +623,7 @@ export const useAppStore = create<AppState>((set, get) => ({
               : `NORTHLINK detected a verified unresolved ${incident.type.toLowerCase()} ahead on the current route. The affected route has ${currentRouteAlt?.risk ?? 100}% predicted risk; ${bestRoute.name} is recommended at ${bestRoute.risk}% risk with an estimated ${Math.floor(bestRoute.currentEta / 60)}h ${bestRoute.currentEta % 60}m journey.`
           };
           set(s => ({ routeRecommendations: [rec, ...s.routeRecommendations], activeRoutes: alternatives }));
+          get().persistVehicles();
           import('@/services/assistantService').then(({ assistantService }) => {
             assistantService.askQuestion(`Why was ${bestRoute.name} recommended for ${shipment.id}?`).then(({ reply }) => {
               set(s => ({ routeRecommendations: s.routeRecommendations.map(item => item.id === rec.id ? { ...item, explanation: reply } : item) }));
@@ -996,21 +1025,23 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   persistVehicles: () => {
-    const { vehicles, activeRoutes } = get();
+    const { vehicles, activeRoutes, routeRecommendations } = get();
     try {
       window.localStorage.setItem('northlink:vehicles', JSON.stringify({
         vehicles,
-        activeRoutes
+        activeRoutes,
+        routeRecommendations
       }));
     } catch {
       // Best-effort persistence; continue silently if storage is unavailable.
     }
   },
 
-  hydrateVehicles: (vehicles, activeRoutes) => {
+  hydrateVehicles: (vehicles, activeRoutes, routeRecommendations) => {
     set(state => ({
       vehicles: vehicles.length > 0 ? vehicles : state.vehicles,
       activeRoutes: activeRoutes.length > 0 ? activeRoutes : state.activeRoutes,
+      routeRecommendations: routeRecommendations && routeRecommendations.length > 0 ? routeRecommendations : state.routeRecommendations,
     }));
   },
 
@@ -1032,8 +1063,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       location,
       severity,
       timestamp: new Date().toLocaleTimeString(),
-      status: 'Reported',
-      verificationStatus: 'REPORTED',
+      status: 'Verified',
+      verificationStatus: 'VERIFIED',
       resolutionStatus: 'UNRESOLVED',
       description: `${type} reported at ${location} via map injection.`,
       coordinates,

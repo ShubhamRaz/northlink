@@ -145,7 +145,9 @@ export default function MapComponent() {
     ? vehicles.filter(v => v.id === trackedVehicleId)
     : vehicles;
 
-  // Build per-vehicle route polylines for ALL active vehicles
+  // Build per-vehicle route polylines for ALL active vehicles.
+  // Prefer the vehicle's actual currentRouteGeometry (from OSRM) when available;
+  // fall back to the static ROUTE_COORDS lookup table only as a last resort.
   const vehicleRoutes = vehicles.map((v, idx) => {
     // For the selected shipment's vehicle, prefer the detailed journeyAnalysis
     if (journeyAnalysis && v.id === vehicles.find(vv =>
@@ -153,8 +155,10 @@ export default function MapComponent() {
     )?.id) return null; // Handled below via journeyAnalysis segments
 
     if (!v.currentRouteId) return null;
-    const coords = ROUTE_COORDS[v.currentRouteId];
-    if (!coords) return null;
+    const coords = v.currentRouteGeometry?.length
+      ? v.currentRouteGeometry
+      : ROUTE_COORDS[v.currentRouteId];
+    if (!coords || coords.length === 0) return null;
     return { vehicleId: v.id, coords, color: VEHICLE_ROUTE_COLORS[v.id] ?? getDefaultColor(idx) };
   }).filter(Boolean) as { vehicleId: string; coords: [number, number][]; color: string }[];
 

@@ -54,6 +54,50 @@ class SimulationEngine {
       const vehicle = state.vehicles.find(v => v.id === shipment.assignedVehicleId);
       if (!vehicle || vehicle.status !== 'In Transit') return;
 
+      // ── SAFETY: pause vehicle if there is an ACTIVE route recommendation
+      // waiting for the dispatcher's decision on this shipment ──
+      const hasActiveRec = state.routeRecommendations.some(
+        r => r.shipmentId === shipment.id && r.status === 'ACTIVE'
+      );
+      if (hasActiveRec) {
+        // Vehicle holds position until dispatcher decides to reroute or keep route
+        state.updateVehicle(vehicle.id, {
+          speed: 0,
+          location: `Holding — awaiting dispatcher decision`,
+        });
+        return;
+      }
+
+      // ── AUTO-DETECT: check if any verified, unresolved incident is close
+      // ahead on the current route and auto-trigger impact assessment ──
+      if (vehicle.currentRouteGeometry?.length && shipment.routeId) {
+        const nearestIncident = state.incidents.find(inc => {
+          if (inc.verificationStatus !== 'VERIFIED' || inc.resolutionStatus !== 'UNRESOLVED') return false;
+          // Check if incident is near the vehicle's route ahead
+          const dist = this.pointToRouteDistance(inc.coordinates, vehicle.currentRouteGeometry!);
+          return dist <= 50;
+        });
+        if (nearestIncident && vehicle.status === 'In Transit') {
+          // Auto-pause and let the dispatcher handle it
+          useAppStore.setState(s => ({
+            shipments: s.shipments.map(sh => sh.id === shipment.id && sh.status === 'In Transit' ? { ...sh, status: 'Route Change Pending' } : sh),
+            vehicles: s.vehicles.map(v => v.id === vehicle.id && v.status === 'In Transit' ? { ...v, status: 'Paused for Safety', speed: 0 } : v),
+          }));
+          useAppStore.getState().addEvent({
+            message: `Vehicle ${vehicle.id} auto-paused — verified incident detected ahead on route.`,
+            type: 'critical'
+          });
+          useAppStore.getState().addAlert({
+            type: 'CRITICAL', title: 'Vehicle Auto-Paused',
+            message: `${vehicle.id} stopped near ${nearestIncident.location}. Verify & assess the incident to generate a reroute.`,
+            severity: 'High', recipientRole: 'Dispatcher', actionRequired: true, actionTaken: false
+          });
+          // Trigger impact assessment automatically
+          void useAppStore.getState().assessIncidentImpact(nearestIncident.id);
+          return;
+        }
+      }
+
       const routeDuration = state.journeyAnalysis?.shipmentId === shipment.id
         ? Math.max(state.journeyAnalysis.outlook.currentTravelMinutes, 1)
         : 240;
@@ -168,6 +212,29 @@ class SimulationEngine {
   }
 
   triggerRandomEvent() {}
+
+  /**
+   * Computes the minimum haversine distance (km) from a point to any vertex
+   * on the given route geometry. Used to detect whether an incident is close
+   * enough to a vehicle's active route to warrant a safety pause.
+   */
+  private pointToRouteDistance(point: [number, number], geometry: [number, number][]): number {
+    let min = Number.POSITIVE_INFINITY;
+    for (const c of geometry) {
+      const d = this.haversineKm(point, c);
+      if (d < min) min = d;
+    }
+    return min;
+  }
+
+  private haversineKm(a: [number, number], b: [number, number]): number {
+    const dLat = (b[0] - a[0]) * Math.PI / 180;
+    const dLon = (b[1] - a[1]) * Math.PI / 180;
+    const lat1 = a[0] * Math.PI / 180;
+    const lat2 = b[0] * Math.PI / 180;
+    const value = Math.sin(dLat / 2) ** 2 + Math.sin(dLon / 2) ** 2 * Math.cos(lat1) * Math.cos(lat2);
+    return 6371 * 2 * Math.atan2(Math.sqrt(value), Math.sqrt(1 - value));
+  }
 }
 
 export const simulationService = new SimulationEngine();
