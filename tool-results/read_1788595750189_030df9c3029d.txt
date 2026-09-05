@@ -1,0 +1,970 @@
+     1→import { create } from 'zustand';
+     2→import {
+     3→  Vehicle, Shipment, Incident, Corridor, District,
+     4→  MapLayer, SimulationMode, SimulationEvent, DeliveryPoint,
+     5→  RouteAlternative, DecisionHistory, Alert, UserRole, QueuedIncident, JourneyAnalysis, RouteRecommendation, AuditEvent
+     6→} from '@/types';
+     7→import {
+     8→  mockVehicles, mockShipments, mockIncidents,
+     9→  mockCorridors, mockDistricts, mockDeliveryPoints, mockAlerts
+    10→} from '@/data/mockData';
+    11→import { generateRoutesAsync, resolveLocationCoordinates } from '@/services/routeService';
+    12→import { predictCorridorRisk } from '@/services/riskService';
+    13→import { determineAccessibility } from '@/services/accessibilityService';
+    14→
+    15→export type AppView =
+    16→  | 'command-center'
+    17→  | 'map'
+    18→  | 'optimizer'
+    19→  | 'insights'
+    20→  | 'analytics'
+    21→  | 'vehicles'
+    22→  | 'shipments'
+    23→  | 'incidents'
+    24→  | 'field'
+    25→  | 'driver'
+    26→  | 'login'
+    27→  | 'settings';
+    28→
+    29→interface AppState {
+    30→  // Data entities
+    31→  vehicles: Vehicle[];
+    32→  shipments: Shipment[];
+    33→  shipmentsHydrated: boolean;
+    34→  shipmentPersistenceError: string | null;
+    35→  incidents: Incident[];
+    36→  corridors: Corridor[];
+    37→  districts: District[];
+    38→  deliveryPoints: DeliveryPoint[];
+    39→
+    40→  // Selections
+    41→  selectedVehicleId: string | null;
+    42→  selectedShipmentId: string | null;
+    43→  selectedIncidentId: string | null;
+    44→  selectedCorridorId: string | null;
+    45→
+    46→  // AI & Routing State
+    47→  activeRoutes: RouteAlternative[];
+    48→  decisionHistory: DecisionHistory[];
+    49→  routeRecommendations: RouteRecommendation[];
+    50→  auditTrail: AuditEvent[];
+    51→
+    52→  // App State
+    53→  simulationActive: boolean;
+    54→  simulationMode: SimulationMode;
+    55→  networkOnline: boolean;
+    56→  activeMapLayers: MapLayer[];
+    57→  eventFeed: SimulationEvent[];
+    58→  alerts: Alert[];
+    59→  offlineQueue: QueuedIncident[];
+    60→  currentUserRole: UserRole;
+    61→  demoStage: number;
+    62→  playbackSpeed: number;
+    63→
+    64→  // Journey Intelligence
+    65→  journeyAnalysis: JourneyAnalysis | null;
+    66→  journeyStartTime: string; // HH:MM
+    67→  currentDriverVehicleId: string | null; // Set at driver login
+    68→  trackedVehicleId: string | null; // Map focus: null = show all
+    69→
+    70→  // Single-page view navigation
+    71→  currentView: AppView;
+    72→  setView: (view: AppView) => void;
+    73→
+    74→  // Actions
+    75→  setSimulationActive: (active: boolean) => void;
+    76→  setSimulationMode: (mode: SimulationMode) => void;
+    77→  setPlaybackSpeed: (speed: number) => void;
+    78→  setNetworkOnline: (online: boolean) => void;
+    79→  toggleMapLayer: (layer: MapLayer) => void;
+    80→  
+    81→  selectVehicle: (id: string | null) => void;
+    82→  selectShipment: (id: string | null) => void;
+    83→  selectIncident: (id: string | null) => void;
+    84→  selectCorridor: (id: string | null) => void;
+    85→
+    86→  updateVehicle: (id: string, updates: Partial<Vehicle>) => void;
+    87→  // --- NEW WORKFLOW ACTIONS ---
+    88→  // 1. Shipment Lifecycle
+    89→  createShipment: (shipmentData: any) => void;
+    90→  markCargoReady: (shipmentId: string) => void;
+    91→  analyzeRoutesForReadyShipment: (shipmentId: string) => Promise<void>;
+    92→  approveInitialRoute: (shipmentId: string, routeId: string) => void;
+    93→  overrideInitialRoute: (shipmentId: string, routeId: string, reason: string) => void;
+    94→  dispatchCargo: (shipmentId: string) => void;
+    95→
+    96→  // 2. Incident & Mid-Journey
+    97→  verifyIncident: (id: string) => void;
+    98→  resolveIncident: (id: string) => void;
+    99→  rejectIncident: (id: string) => void;
+   100→  assessIncidentImpact: (incidentId: string) => Promise<void>;
+   101→  decideMidJourneyRoute: (shipmentId: string, decision: 'CHANGE' | 'KEEP', routeId?: string) => void;
+   102→  recordAuditEvent: (event: Omit<AuditEvent, 'id' | 'timestamp' | 'actorRole'> & { actorRole?: AuditEvent['actorRole'] }) => void;
+   103→
+   104→  // 3. System & Legacy
+   105→  addEvent: (event: Omit<SimulationEvent, 'id' | 'timestamp'>) => void;
+   106→  clearSelections: () => void;
+   107→  recalculateNetwork: () => void;
+   108→  resetScenario: () => void;
+   109→  setCurrentUserRole: (role: UserRole) => void;
+   110→  addAlert: (alert: Omit<Alert, 'id' | 'timestamp' | 'read'>) => void;
+   111→  markAlertRead: (id: string) => void;
+   112→  acknowledgeAlert: (id: string) => void;
+   113→  acknowledgeRouteChange: (id: string) => void;
+   114→  queueIncident: (incidentData: Partial<Incident>) => void;
+   115→  setOfflineQueue: (queue: QueuedIncident[]) => void;
+   116→  addIncident: (incident: Incident) => void;
+   117→  setDemoStage: (stage: number) => void;
+   118→  initializeScenario: () => void;
+   119→
+   120→  // Journey Intelligence Actions
+   121→  analyzeJourney: (shipmentId: string, startTime?: string, routeId?: string, routeCoordinates?: [number, number][], routeDurationMinutes?: number) => Promise<void>;
+   122→  setJourneyStartTime: (time: string) => void;
+   123→  refreshJourneyAnalysis: () => void;
+   124→  setCurrentDriverVehicleId: (id: string) => void;
+   125→  setTrackedVehicleId: (id: string | null) => void;
+   126→  addShipment: (shipment: Shipment) => void;
+   127→  hydrateShipments: (shipments: Shipment[]) => void;
+   128→  persistShipments: () => Promise<void>;
+   129→}
+   130→
+   131→const defaultLayers: MapLayer[] = ['Corridors', 'Vehicles', 'Incidents', 'Deliveries'];
+   132→
+   133→function haversineKm(a: [number, number], b: [number, number]): number {
+   134→  const dLat = (b[0] - a[0]) * Math.PI / 180;
+   135→  const dLon = (b[1] - a[1]) * Math.PI / 180;
+   136→  const lat1 = a[0] * Math.PI / 180;
+   137→  const lat2 = b[0] * Math.PI / 180;
+   138→  const value = Math.sin(dLat / 2) ** 2 + Math.sin(dLon / 2) ** 2 * Math.cos(lat1) * Math.cos(lat2);
+   139→  return 6371 * 2 * Math.atan2(Math.sqrt(value), Math.sqrt(1 - value));
+   140→}
+   141→
+   142→function nearestRouteIndex(point: [number, number], geometry: [number, number][]): number {
+   143→  return geometry.reduce((nearestIndex, coordinate, index) =>
+   144→    haversineKm(point, coordinate) < haversineKm(point, geometry[nearestIndex]) ? index : nearestIndex, 0);
+   145→}
+   146→
+   147→export const useAppStore = create<AppState>((set, get) => ({
+   148→  vehicles: JSON.parse(JSON.stringify(mockVehicles)),
+   149→  shipments: JSON.parse(JSON.stringify(mockShipments)),
+   150→  shipmentsHydrated: false,
+   151→  shipmentPersistenceError: null,
+   152→  incidents: JSON.parse(JSON.stringify(mockIncidents)),
+   153→  corridors: JSON.parse(JSON.stringify(mockCorridors)),
+   154→  districts: JSON.parse(JSON.stringify(mockDistricts)),
+   155→  deliveryPoints: JSON.parse(JSON.stringify(mockDeliveryPoints)),
+   156→
+   157→  selectedVehicleId: null,
+   158→  selectedShipmentId: null,
+   159→  selectedIncidentId: null,
+   160→  selectedCorridorId: null,
+   161→
+   162→  activeRoutes: [],
+   163→  decisionHistory: [],
+   164→  routeRecommendations: [],
+   165→  auditTrail: [],
+   166→
+   167→  simulationActive: false,
+   168→  simulationMode: 'NORMAL',
+   169→  networkOnline: true,
+   170→  activeMapLayers: defaultLayers,
+   171→  eventFeed: [],
+   172→  alerts: JSON.parse(JSON.stringify(mockAlerts)),
+   173→  offlineQueue: [],
+   174→  currentUserRole: 'Dispatcher',
+   175→  demoStage: 0,
+   176→  playbackSpeed: 1,
+   177→  journeyAnalysis: null,
+   178→  journeyStartTime: '10:00',
+   179→  currentDriverVehicleId: null,
+   180→  trackedVehicleId: null,
+   181→
+   182→  currentView: 'command-center',
+   183→  setView: (view) => set({ currentView: view }),
+   184→
+   185→  setSimulationActive: (active) => set({ simulationActive: active }),
+   186→  
+   187→  setPlaybackSpeed: (speed) => {
+   188→    set({ playbackSpeed: speed });
+   189→    import('@/services/simulationService').then(({ simulationService }) => {
+   190→      simulationService.setSpeed(speed);
+   191→    });
+   192→  },
+   193→
+   194→  setSimulationMode: (mode) => {
+   195→    if (mode === 'RESET SCENARIO') {
+   196→      get().resetScenario();
+   197→      return;
+   198→    }
+   199→
+   200→    set({ simulationMode: mode });
+   201→    get().addEvent({
+   202→      message: `Simulation mode changed to ${mode}`,
+   203→      type: 'warning'
+   204→    });
+   205→
+   206→    // If LANDSLIDE, simulate an incident on C02
+   207→    if (mode === 'LANDSLIDE') {
+   208→      const landslideIncident: Incident = {
+   209→        id: 'INC-' + Math.floor(Math.random() * 1000),
+   210→        type: 'Landslide',
+   211→        location: 'NH-102 (Imphal Approach)',
+   212→        severity: 'Critical',
+   213→        timestamp: new Date().toLocaleTimeString(),
+   214→        status: 'Reported',
+   215→        verificationStatus: 'REPORTED',
+   216→        resolutionStatus: 'UNRESOLVED',
+   217→        description: 'Major landslide blocking the highway due to heavy rainfall.',
+   218→        coordinates: [25.0, 93.9], // roughly on C02
+   219→        source: 'Satellite & Field Sensor',
+   220→        confidence: 0.95,
+   221→        affectedCorridorId: 'C02'
+   222→      };
+   223→      
+   224→      get().addIncident(landslideIncident);
+   225→    }
+   226→
+   227→    // After setting mode (and possibly adding incidents), recalculate network risk and routing
+   228→    setTimeout(() => {
+   229→      get().recalculateNetwork();
+   230→      get().refreshJourneyAnalysis();
+   231→    }, 100);
+   232→  },
+   233→
+   234→  setNetworkOnline: (online) => {
+   235→    set({ networkOnline: online });
+   236→    get().addEvent({
+   237→      message: online ? 'Network connection restored' : 'Network connection lost',
+   238→      type: online ? 'success' : 'critical'
+   239→    });
+   240→    
+   241→    // Automatically trigger sync if going online
+   242→    if (online) {
+   243→      import('@/services/syncService').then(({ syncService }) => {
+   244→        syncService.processQueue();
+   245→      });
+   246→    }
+   247→  },
+   248→  
+   249→  toggleMapLayer: (layer) => set((state) => {
+   250→    const layers = state.activeMapLayers;
+   251→    if (layers.includes(layer)) {
+   252→      return { activeMapLayers: layers.filter(l => l !== layer) };
+   253→    }
+   254→    return { activeMapLayers: [...layers, layer] };
+   255→  }),
+   256→
+   257→  selectVehicle: (id) => set({ selectedVehicleId: id, selectedShipmentId: null, selectedIncidentId: null, selectedCorridorId: null }),
+   258→  selectShipment: (id) => set({ selectedShipmentId: id, selectedVehicleId: null, selectedIncidentId: null, selectedCorridorId: null, journeyAnalysis: null }),
+   259→  selectIncident: (id) => set({ selectedIncidentId: id, selectedVehicleId: null, selectedShipmentId: null, selectedCorridorId: null }),
+   260→  selectCorridor: (id) => set({ selectedCorridorId: id, selectedVehicleId: null, selectedShipmentId: null, selectedIncidentId: null }),
+   261→
+   262→  clearSelections: () => set({ selectedVehicleId: null, selectedShipmentId: null, selectedIncidentId: null, selectedCorridorId: null }),
+   263→
+   264→  updateVehicle: (id, updates) => set((state) => ({
+   265→    vehicles: state.vehicles.map(v => v.id === id ? { ...v, ...updates, lastUpdated: new Date().toISOString() } : v)
+   266→  })),
+   267→
+   268→  // --- 1. SHIPMENT LIFECYCLE ---
+   269→
+   270→  createShipment: (data) => {
+   271→    const newShipment: Shipment = {
+   272→      id: data.id || `SHIP-${Math.floor(Math.random() * 1000)}`,
+   273→      cargoType: data.cargoType,
+   274→      origin: data.origin,
+   275→      destination: data.destination,
+   276→      priority: data.priority,
+   277→      status: 'Planned',
+   278→      eta: '--',
+   279→      assignedVehicleId: data.assignedVehicleId,
+   280→      scheduledDate: data.scheduledDate,
+   281→      scheduledTime: data.scheduledTime,
+   282→      scheduleType: data.scheduleType,
+   283→      schedule: data.schedule,
+   284→      deadline: data.deadline,
+   285→      notes: data.notes
+   286→    };
+   287→    
+   288→    set(state => ({
+   289→      shipments: [newShipment, ...state.shipments.filter(s => s.id !== data.id)],
+   290→      selectedShipmentId: newShipment.id
+   291→    }));
+   292→
+   293→    get().recordAuditEvent({
+   294→      eventType: 'SHIPMENT_CREATED', entityType: 'SHIPMENT', entityId: newShipment.id,
+   295→      shipmentId: newShipment.id, action: 'Shipment created', nextState: 'Planned'
+   296→    });
+   297→
+   298→    get().addEvent({ message: `Shipment ${newShipment.id} created (Planned).`, type: 'info' });
+   299→    void get().persistShipments();
+   300→  },
+   301→
+   302→  markCargoReady: (shipmentId) => {
+   303→    const timeNow = new Date().toISOString();
+   304→    const previous = get().shipments.find(s => s.id === shipmentId)?.status;
+   305→    set(state => ({
+   306→      shipments: state.shipments.map(s => s.id === shipmentId ? { ...s, status: 'Ready', cargoReadyAt: timeNow } : s)
+   307→    }));
+   308→    get().recordAuditEvent({
+   309→      eventType: 'CARGO_READY', entityType: 'SHIPMENT', entityId: shipmentId,
+   310→      shipmentId, action: 'Cargo marked ready', previousState: previous, nextState: 'Ready'
+   311→    });
+   312→    get().addEvent({ message: `Cargo for ${shipmentId} is Ready.`, type: 'info' });
+   313→    get().analyzeRoutesForReadyShipment(shipmentId);
+   314→    void get().persistShipments();
+   315→  },
+   316→
+   317→  analyzeRoutesForReadyShipment: async (shipmentId) => {
+   318→    const state = get();
+   319→    const shipment = state.shipments.find(s => s.id === shipmentId);
+   320→    if (!shipment || shipment.status !== 'Ready') return;
+   321→
+   322→    const alternatives = (await generateRoutesAsync(shipment, state.incidents, state.simulationMode));
+   323→    const bestRoute = alternatives.find(a => a.isFeasible);
+   324→    
+   325→    if (bestRoute) {
+   326→      set(s => ({ activeRoutes: alternatives }));
+   327→      state.addEvent({
+   328→        message: `Route analysis completed for ${shipment.id}. Recommended: ${bestRoute.name}. Pending Dispatcher Decision.`,
+   329→        type: 'info'
+   330→      });
+   331→      const actualStart = shipment.cargoReadyAt
+   332→        ? new Date(shipment.cargoReadyAt).toTimeString().slice(0, 5)
+   333→        : shipment.scheduledTime ?? shipment.startTime ?? '10:00';
+   334→      await state.analyzeJourney(shipmentId, actualStart, bestRoute.id, bestRoute.coordinates, bestRoute.currentEta);
+   335→    } else {
+   336→      set({ activeRoutes: alternatives });
+   337→      state.addEvent({ message: `ALERT: No feasible routes found for ${shipment.id}`, type: 'critical' });
+   338→    }
+   339→  },
+   340→
+   341→  approveInitialRoute: (shipmentId, routeId) => {
+   342→    const state = get();
+   343→    if (state.currentUserRole !== 'Dispatcher' && state.currentUserRole !== 'Admin') return;
+   344→    const shipment = state.shipments.find(s => s.id === shipmentId);
+   345→    const route = state.activeRoutes.find(r => r.id === routeId);
+   346→    if (!shipment || !route) return;
+   347→
+   348→    const decision: DecisionHistory = {
+   349→      id: 'DEC-' + Math.random().toString(36).substring(7),
+   350→      timestamp: new Date().toLocaleTimeString(),
+   351→      shipmentId,
+   352→      selectedRouteId: route.id,
+   353→      candidateRoutes: state.activeRoutes,
+   354→      trigger: 'Initial Route Approval',
+   355→      reason: route.reasons[0] || 'Dispatcher selected route',
+   356→      decisionType: 'INITIAL_ROUTE_APPROVAL',
+   357→      approvedBy: state.currentUserRole,
+   358→      risk: route.risk,
+   359→      eta: `${Math.floor(route.currentEta / 60)}h ${route.currentEta % 60}m`,
+   360→      cost: route.cost,
+   361→      resilience: route.resilience
+   362→    };
+   363→
+   364→    const approvedAt = new Date().toISOString();
+   365→    set(s => ({
+   366→      decisionHistory: [decision, ...s.decisionHistory],
+   367→      shipments: s.shipments.map(sh => sh.id === shipmentId ? { 
+   368→        ...sh, 
+   369→        routeId: route.id,
+   370→        eta: decision.eta || sh.eta,
+   371→        routeApprovedAt: approvedAt,
+   372→        routeApprovedBy: s.currentUserRole,
+   373→        status: 'Ready'
+   374→      } : sh)
+   375→    }));
+   376→    
+   377→    // Assign route to vehicle if already assigned
+   378→    if (shipment.assignedVehicleId) {
+   379→      set(s => ({
+   380→        vehicles: s.vehicles.map(v => v.id === shipment.assignedVehicleId ? { ...v, currentRouteId: route.id, currentRouteGeometry: route.coordinates, eta: decision.eta || v.eta, status: 'Ready' } : v)
+   381→      }));
+   382→    }
+   383→
+   384→    state.addEvent({ message: `Route ${route.name} approved for ${shipmentId}. Ready for dispatch.`, type: 'success' });
+   385→    state.recordAuditEvent({
+   386→      eventType: 'ROUTE_APPROVED', entityType: 'ROUTE', entityId: route.id,
+   387→      shipmentId, action: 'Initial route approved', nextState: 'Ready', reason: decision.reason
+   388→    });
+   389→    state.refreshJourneyAnalysis();
+   390→    void state.persistShipments();
+   391→  },
+   392→
+   393→  overrideInitialRoute: (shipmentId, routeId, reason) => {
+   394→    const state = get();
+   395→    if (state.currentUserRole !== 'Dispatcher' && state.currentUserRole !== 'Admin') return;
+   396→    const shipment = state.shipments.find(s => s.id === shipmentId);
+   397→    const route = state.activeRoutes.find(r => r.id === routeId);
+   398→    if (!shipment || !route) return;
+   399→
+   400→    const decision: DecisionHistory = {
+   401→      id: 'DEC-' + Math.random().toString(36).substring(7),
+   402→      timestamp: new Date().toLocaleTimeString(),
+   403→      shipmentId,
+   404→      selectedRouteId: route.id,
+   405→      candidateRoutes: state.activeRoutes,
+   406→      trigger: 'Manual Override',
+   407→      reason,
+   408→      decisionType: 'MANUAL_OVERRIDE',
+   409→      approvedBy: state.currentUserRole,
+   410→      isOverride: true,
+   411→      risk: route.risk,
+   412→      eta: `${Math.floor(route.currentEta / 60)}h ${route.currentEta % 60}m`,
+   413→      cost: route.cost,
+   414→      resilience: route.resilience
+   415→    };
+   416→
+   417→    set(s => ({
+   418→      decisionHistory: [decision, ...s.decisionHistory],
+   419→      shipments: s.shipments.map(sh => sh.id === shipmentId ? { 
+   420→        ...sh, 
+   421→        routeId: route.id,
+   422→        eta: decision.eta || sh.eta
+   423→      } : sh)
+   424→    }));
+   425→
+   426→    if (shipment.assignedVehicleId) {
+   427→      set(s => ({
+   428→        vehicles: s.vehicles.map(v => v.id === shipment.assignedVehicleId ? { ...v, currentRouteId: route.id, eta: decision.eta || v.eta } : v)
+   429→      }));
+   430→    }
+   431→
+   432→    state.addEvent({ message: `Route ${route.name} manually overridden for ${shipmentId}. Ready for dispatch.`, type: 'warning' });
+   433→    state.refreshJourneyAnalysis();
+   434→  },
+   435→
+   436→  dispatchCargo: (shipmentId) => {
+   437→    const state = get();
+   438→    if (state.currentUserRole !== 'Dispatcher' && state.currentUserRole !== 'Admin') return;
+   439→    const shipment = state.shipments.find(s => s.id === shipmentId);
+   440→    if (!shipment || shipment.status !== 'Ready' || !shipment.routeId) {
+   441→      state.addEvent({ message: `Cannot dispatch ${shipmentId}: No route approved.`, type: 'critical' });
+   442→      return;
+   443→    }
+   444→    
+   445→    const timeNow = new Date().toISOString();
+   446→
+   447→    set(s => ({
+   448→      shipments: s.shipments.map(sh => sh.id === shipmentId ? { ...sh, status: 'In Transit', dispatchedAt: timeNow } : sh)
+   449→    }));
+   450→
+   451→    if (shipment.assignedVehicleId) {
+   452→      set(s => ({
+   453→        vehicles: s.vehicles.map(v => v.id === shipment.assignedVehicleId ? { ...v, status: 'In Transit', progress: 0, progressMinutes: 0 } : v)
+   454→      }));
+   455→    }
+   456→
+   457→    state.addEvent({ message: `Cargo ${shipmentId} Dispatched. Monitoring active.`, type: 'success' });
+   458→    state.recordAuditEvent({
+   459→      eventType: 'CARGO_DISPATCHED', entityType: 'SHIPMENT', entityId: shipmentId,
+   460→      shipmentId, action: 'Cargo dispatched', previousState: 'Ready', nextState: 'In Transit'
+   461→    });
+   462→    
+   463→    if (!state.simulationActive) {
+   464→      import('@/services/simulationService').then(({ simulationService }) => {
+   465→        simulationService.start();
+   466→      });
+   467→    }
+   468→    void state.persistShipments();
+   469→  },
+   470→
+   471→  // --- 2. INCIDENT & MID-JOURNEY LOGIC ---
+   472→
+   473→  verifyIncident: (id) => {
+   474→    if (get().currentUserRole !== 'Dispatcher' && get().currentUserRole !== 'Admin') return;
+   475→    const incident = get().incidents.find(i => i.id === id);
+   476→    if (!incident || incident.verificationStatus === 'REJECTED') return;
+   477→    set(state => ({ incidents: state.incidents.map(i => i.id === id ? { ...i, status: 'Verified', verificationStatus: 'VERIFIED' } : i) }));
+   478→    get().recordAuditEvent({ eventType: 'INCIDENT_VERIFIED', entityType: 'INCIDENT', entityId: id, incidentId: id, action: 'Incident verified', previousState: incident.status, nextState: 'VERIFIED' });
+   479→    get().addEvent({ message: `Incident ${id} verified. Ready for impact assessment.`, type: 'warning' });
+   480→  },
+   481→
+   482→  resolveIncident: (id) => {
+   483→    if (get().currentUserRole !== 'Dispatcher' && get().currentUserRole !== 'Admin') return;
+   484→    const incident = get().incidents.find(i => i.id === id);
+   485→    if (!incident || incident.verificationStatus !== 'VERIFIED') return;
+   486→    set(state => ({ incidents: state.incidents.map(i => i.id === id ? { ...i, status: 'Resolved', resolutionStatus: 'RESOLVED' } : i) }));
+   487→    get().recordAuditEvent({ eventType: 'INCIDENT_RESOLVED', entityType: 'INCIDENT', entityId: id, incidentId: id, action: 'Incident resolved', previousState: incident.resolutionStatus, nextState: 'RESOLVED' });
+   488→    get().addEvent({ message: `Incident ${id} Resolved.`, type: 'success' });
+   489→    
+   490→    // Cancel any active recommendations related to this incident
+   491→    set(state => ({
+   492→      routeRecommendations: state.routeRecommendations.map((r: RouteRecommendation) => r.incidentId === id && r.status === 'ACTIVE' ? { ...r, status: 'CANCELLED' } : r),
+   493→      shipments: state.shipments.map(shipment => shipment.status === 'Paused for Safety' && shipment.assignedVehicleId
+   494→        ? { ...shipment, status: 'In Transit' }
+   495→        : shipment),
+   496→      vehicles: state.vehicles.map(vehicle => vehicle.status === 'Paused for Safety'
+   497→        ? { ...vehicle, status: 'In Transit' }
+   498→        : vehicle)
+   499→    }));
+   500→
+   501→    setTimeout(() => get().recalculateNetwork(), 100);
+   502→  },
+   503→  
+   504→  rejectIncident: (id) => {
+   505→    if (get().currentUserRole !== 'Dispatcher' && get().currentUserRole !== 'Admin') return;
+   506→    set(state => ({ incidents: state.incidents.map(i => i.id === id ? { ...i, status: 'Rejected', verificationStatus: 'REJECTED' } : i) }));
+   507→    get().addEvent({ message: `Incident ${id} Rejected.`, type: 'info' });
+   508→  },
+   509→
+   510→  assessIncidentImpact: async (incidentId) => {
+   511→    const state = get();
+   512→    if (state.currentUserRole !== 'Dispatcher' && state.currentUserRole !== 'Admin') return;
+   513→    const incident = state.incidents.find(i => i.id === incidentId);
+   514→    if (!incident || incident.verificationStatus !== 'VERIFIED' || incident.resolutionStatus !== 'UNRESOLVED') return;
+   515→    
+   516→    const timeNow = new Date().toLocaleTimeString();
+   517→
+   518→    set(s => ({ incidents: s.incidents.map(i => i.id === incidentId ? { ...i, status: 'Unresolved', impactAssessment: { assessedAt: timeNow, affectedShipmentIds: [], affectsRemainingRoute: false, recommendedAction: 'MONITOR' } } : i) }));
+   519→
+   520→    const affectedShipments = state.shipments.filter(s => {
+   521→      if (s.status !== 'In Transit') return false;
+   522→      const vehicle = state.vehicles.find(v => v.id === s.assignedVehicleId);
+   523→      if (!vehicle || !vehicle.currentRouteId) return false;
+   524→      if (vehicle.currentRouteGeometry?.length) {
+   525→        const vehicleIndex = nearestRouteIndex(vehicle.coordinates, vehicle.currentRouteGeometry);
+   526→        const incidentIndex = nearestRouteIndex(incident.coordinates, vehicle.currentRouteGeometry);
+   527→        return incidentIndex > vehicleIndex &&
+   528→          haversineKm(incident.coordinates, vehicle.currentRouteGeometry[incidentIndex]) <= 35;
+   529→      }
+   530→      const activeRoute = state.activeRoutes.find(r => r.id === vehicle.currentRouteId);
+   531→      return Boolean(activeRoute?.corridorIds.includes(incident.affectedCorridorId ?? ''));
+   532→    });
+   533→
+   534→    set(s => ({ incidents: s.incidents.map(i => i.id === incidentId ? {
+   535→      ...i,
+   536→      impactAssessment: {
+   537→        assessedAt: timeNow,
+   538→        affectedShipmentIds: affectedShipments.map(shipment => shipment.id),
+   539→        affectsRemainingRoute: affectedShipments.length > 0,
+   540→        recommendedAction: affectedShipments.length > 0 ? 'ROUTE_CHANGE' : 'MONITOR'
+   541→      }
+   542→    } : i) }));
+   543→
+   544→    if (affectedShipments.length > 0) {
+   545→      get().recalculateNetwork();
+   546→
+   547→      for (const shipment of affectedShipments) {
+   548→        const vehicle = state.vehicles.find(item => item.id === shipment.assignedVehicleId);
+   549→        const destination = resolveLocationCoordinates(shipment.destination);
+   550→        if (!vehicle || !destination) continue;
+   551→        // If it's a hard blockage, pause the vehicle
+   552→        const unsafe = (incident.type === 'Landslide' || incident.type === 'Road Blockage' || incident.type === 'Bridge Damage') && incident.severity === 'Critical';
+   553→        if (unsafe) {
+   554→          set(s => ({
+   555→            shipments: s.shipments.map(sh => sh.id === shipment.id ? { ...sh, status: 'Route Change Pending' } : sh),
+   556→            vehicles: s.vehicles.map(v => v.id === shipment.assignedVehicleId ? { ...v, status: 'Paused for Safety' } : v)
+   557→          }));
+   558→          get().addAlert({
+   559→            type: 'CRITICAL', title: 'Vehicle Paused for Safety',
+   560→            message: `Vehicle ${shipment.assignedVehicleId} paused due to verified ${incident.type} ahead.`,
+   561→            severity: 'High', recipientRole: 'Driver', actionRequired: false, actionTaken: false
+   562→          });
+   563→        }
+   564→
+   565→        // Generate alternatives
+   566→        const alternatives = await generateRoutesAsync(shipment, get().incidents, state.simulationMode, vehicle.coordinates, destination);
+   567→        const currentRouteAlt = state.activeRoutes.find(a => a.id === shipment.routeId);
+   568→        const bestRoute = alternatives.find(a => a.isFeasible && a.id !== shipment.routeId);
+   569→        
+   570→        if (bestRoute) {
+   571→          const rec: RouteRecommendation = {
+   572→            id: 'REC-' + Math.random().toString(36).substring(7),
+   573→            shipmentId: shipment.id,
+   574→            incidentId,
+   575→            recommendedRouteId: bestRoute.id,
+   576→            alternativeRoutes: alternatives,
+   577→            reason: `Avoids affected corridor. Reduces risk from ${currentRouteAlt?.risk || 100}% to ${bestRoute.risk}%.`,
+   578→            status: 'ACTIVE',
+   579→            createdAt: new Date().toISOString(),
+   580→            lastEvaluatedAt: new Date().toISOString(),
+   581→            trigger: 'Mid-Journey Verification',
+   582→            explanation: `NORTHLINK detected a verified unresolved ${incident.type.toLowerCase()} ahead on the current route. The affected route has ${currentRouteAlt?.risk ?? 100}% predicted risk; ${bestRoute.name} is recommended at ${bestRoute.risk}% risk with an estimated ${Math.floor(bestRoute.currentEta / 60)}h ${bestRoute.currentEta % 60}m journey.`
+   583→          };
+   584→          set(s => ({ routeRecommendations: [rec, ...s.routeRecommendations], activeRoutes: alternatives }));
+   585→          import('@/services/assistantService').then(({ assistantService }) => {
+   586→            assistantService.askQuestion(`Why was ${bestRoute.name} recommended for ${shipment.id}?`).then(({ reply }) => {
+   587→              set(s => ({ routeRecommendations: s.routeRecommendations.map(item => item.id === rec.id ? { ...item, explanation: reply } : item) }));
+   588→            });
+   589→          });
+   590→          get().addAlert({
+   591→            type: 'ROUTE UPDATE', title: 'Route Change Recommended',
+   592→            message: `Recommendation generated for ${shipment.id}: ${bestRoute.name}.`,
+   593→            severity: 'High', recipientRole: 'Dispatcher', actionRequired: true, actionTaken: false
+   594→          });
+   595→        }
+   596→      }
+   597→    }
+   598→  },
+   599→
+   600→  decideMidJourneyRoute: (shipmentId, decision, routeId) => {
+   601→    const state = get();
+   602→    if (state.currentUserRole !== 'Dispatcher' && state.currentUserRole !== 'Admin') return;
+   603→    const shipment = state.shipments.find(s => s.id === shipmentId);
+   604→    const rec = state.routeRecommendations.find(r => r.shipmentId === shipmentId && r.status === 'ACTIVE');
+   605→    if (!shipment || !rec) return;
+   606→
+   607→    if (decision === 'CHANGE' && routeId) {
+   608→      const newRoute = rec.alternativeRoutes.find(r => r.id === routeId);
+   609→      if (!newRoute) return;
+   610→
+   611→      const hist: DecisionHistory = {
+   612→        id: 'DEC-' + Math.random().toString(36).substring(7),
+   613→        timestamp: new Date().toLocaleTimeString(),
+   614→        shipmentId,
+   615→        selectedRouteId: newRoute.id,
+   616→        candidateRoutes: rec.alternativeRoutes,
+   617→        trigger: 'Mid-Journey Reroute',
+   618→        reason: rec.reason,
+   619→        decisionType: 'MID_JOURNEY_REROUTE',
+   620→        approvedBy: state.currentUserRole,
+   621→        risk: newRoute.risk,
+   622→        eta: `${Math.floor(newRoute.currentEta / 60)}h ${newRoute.currentEta % 60}m`
+   623→      };
+   624→
+   625→      set(s => ({
+   626→        decisionHistory: [hist, ...s.decisionHistory],
+   627→        routeRecommendations: s.routeRecommendations.map(r => r.id === rec.id ? { ...r, status: 'APPROVED' } : r),
+   628→        shipments: s.shipments.map(sh => sh.id === shipmentId ? { ...sh, routeId: newRoute.id, status: 'Route Change Pending', eta: hist.eta || sh.eta } : sh),
+   629→        vehicles: s.vehicles.map(v => v.id === shipment.assignedVehicleId ? {
+   630→          ...v,
+   631→          currentRouteId: newRoute.id,
+   632→          currentRouteGeometry: [v.coordinates, ...newRoute.coordinates],
+   633→          progressMinutes: 0,
+   634→          progress: 0,
+   635→          status: 'Route Change Pending',
+   636→          eta: hist.eta || v.eta
+   637→        } : v)
+   638→      }));
+   639→
+   640→      import('@/services/alertService').then(({ alertService }) => {
+   641→        alertService.triggerRouteChangeAlert(shipment.id, shipment.assignedVehicleId!, newRoute.name, 'Dispatcher Approved Reroute');
+   642→      });
+   643→      state.refreshJourneyAnalysis();
+   644→      get().recordAuditEvent({
+   645→        eventType: 'REROUTE_APPROVED', entityType: 'ROUTE', entityId: newRoute.id,
+   646→        shipmentId, vehicleId: shipment.assignedVehicleId,
+   647→        action: 'Dispatcher approved route change', previousState: shipment.routeId, nextState: newRoute.id,
+   648→        reason: rec.reason
+   649→      });
+   650→      get().addEvent({ message: `Dispatcher changed route for ${shipmentId} to ${newRoute.name}. Waiting for driver acknowledgment.`, type: 'success' });
+   651→      void get().persistShipments();
+   652→      
+   653→    } else {
+   654→      const incident = rec.incidentId ? state.incidents.find(item => item.id === rec.incidentId) : undefined;
+   655→      const remainsUnsafe = incident?.verificationStatus === 'VERIFIED' && incident.resolutionStatus === 'UNRESOLVED' &&
+   656→        (incident.type === 'Landslide' || incident.type === 'Road Blockage' || incident.type === 'Bridge Damage') &&
+   657→        incident.severity === 'Critical';
+   658→      const hist: DecisionHistory = {
+   659→        id: 'DEC-' + Math.random().toString(36).substring(7),
+   660→        timestamp: new Date().toLocaleTimeString(),
+   661→        shipmentId,
+   662→        selectedRouteId: shipment.routeId!,
+   663→        candidateRoutes: rec.alternativeRoutes,
+   664→        trigger: 'Mid-Journey Reroute',
+   665→        reason: 'Dispatcher confirmed route remains operational.',
+   666→        decisionType: 'KEEP_CURRENT_ROUTE',
+   667→        approvedBy: state.currentUserRole
+   668→      };
+   669→      set(s => ({
+   670→        decisionHistory: [hist, ...s.decisionHistory],
+   671→        routeRecommendations: s.routeRecommendations.map(r => r.id === rec.id ? { ...r, status: 'REJECTED' } : r),
+   672→        shipments: s.shipments.map(item => item.id === shipmentId ? { ...item, status: remainsUnsafe ? 'Paused for Safety' : 'In Transit' } : item),
+   673→        vehicles: s.vehicles.map(item => item.id === shipment.assignedVehicleId ? { ...item, status: remainsUnsafe ? 'Paused for Safety' : 'In Transit' } : item)
+   674→      }));
+   675→      get().recordAuditEvent({
+   676→        eventType: 'REROUTE_DECISION', entityType: 'SHIPMENT', entityId: shipmentId,
+   677→        shipmentId, action: 'Dispatcher kept current route', nextState: remainsUnsafe ? 'Paused for Safety' : 'In Transit',
+   678→        reason: remainsUnsafe ? 'Current route remains confirmed unsafe.' : 'Current route remains operational.'
+   679→      });
+   680→      get().addEvent({ message: `Dispatcher kept current route for ${shipmentId}. ${remainsUnsafe ? 'Vehicle remains paused for safety.' : 'Vehicle continues monitoring.'}`, type: remainsUnsafe ? 'warning' : 'info' });
+   681→      void get().persistShipments();
+   682→    }
+   683→  },
+   684→
+   685→  // --- 3. SYSTEM & LEGACY ACTIONS ---
+   686→
+   687→  addEvent: (event) => set((state) => ({
+   688→    eventFeed: [
+   689→      {
+   690→        ...event,
+   691→        id: Math.random().toString(36).substring(7),
+   692→        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
+   693→      },
+   694→      ...state.eventFeed
+   695→    ].slice(0, 50)
+   696→  })),
+   697→
+   698→  recalculateNetwork: () => {
+   699→    const state = get();
+   700→    const updatedCorridors = state.corridors.map(corridor => {
+   701→      const riskPred = predictCorridorRisk(corridor, state.incidents, state.simulationMode);
+   702→      const accessibility = determineAccessibility(corridor, riskPred, state.incidents);
+   703→      return {
+   704→        ...corridor,
+   705→        risk: Math.round(riskPred.probability * 100),
+   706→        accessibility
+   707→      };
+   708→    });
+   709→    set({ corridors: updatedCorridors });
+   710→    
+   711→    // Evaluate if any ACTIVE route recommendations are now STALE
+   712→    const activeRecs = state.routeRecommendations.filter(r => r.status === 'ACTIVE');
+   713→    if (activeRecs.length > 0) {
+   714→      set(s => ({
+   715→        routeRecommendations: s.routeRecommendations.map(r => r.status === 'ACTIVE' ? { ...r, status: 'STALE' } : r)
+   716→      }));
+   717→      activeRecs.forEach(r => get().assessIncidentImpact(r.incidentId!)); // Re-assess
+   718→    }
+   719→  },
+   720→
+   721→  resetScenario: () => {
+   722→    set({
+   723→      simulationMode: 'NORMAL',
+   724→      vehicles: JSON.parse(JSON.stringify(mockVehicles)),
+   725→      shipments: JSON.parse(JSON.stringify(mockShipments)),
+   726→      incidents: JSON.parse(JSON.stringify(mockIncidents)),
+   727→      corridors: JSON.parse(JSON.stringify(mockCorridors)),
+   728→      alerts: JSON.parse(JSON.stringify(mockAlerts)),
+   729→      activeRoutes: [],
+   730→      decisionHistory: [],
+   731→      routeRecommendations: [],
+   732→      offlineQueue: [],
+   733→      demoStage: 0,
+   734→      journeyAnalysis: null,
+   735→      journeyStartTime: '10:00',
+   736→      selectedShipmentId: null,
+   737→      selectedVehicleId: null
+   738→    });
+   739→    
+   740→    import('@/services/simulationService').then(({ simulationService }) => {
+   741→      simulationService.pause();
+   742→    });
+   743→
+   744→    get().addEvent({ message: 'System reset to initial operational state.', type: 'info' });
+   745→    get().recalculateNetwork();
+   746→
+   747→    // Reset leaves the system stopped; the dispatcher must explicitly dispatch cargo.
+   748→  },
+   749→
+   750→  setCurrentUserRole: (role) => set({ currentUserRole: role }),
+   751→
+   752→  addAlert: (alert) => set((state) => ({
+   753→    alerts: [
+   754→      {
+   755→        ...alert,
+   756→        id: 'ALT-' + Math.random().toString(36).substring(7),
+   757→        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
+   758→        read: false
+   759→      },
+   760→      ...state.alerts
+   761→    ]
+   762→  })),
+   763→
+   764→  markAlertRead: (id) => set((state) => ({
+   765→    alerts: state.alerts.map(a => a.id === id ? { ...a, read: true } : a)
+   766→  })),
+   767→
+   768→  acknowledgeAlert: (id) => set((state) => ({
+   769→    alerts: state.alerts.map(a => a.id === id ? { ...a, actionTaken: true, read: true } : a)
+   770→  })),
+   771→
+   772→  acknowledgeRouteChange: (id) => {
+   773→    const state = get();
+   774→    const alert = state.alerts.find(item => item.id === id);
+   775→    if (!alert || alert.type !== 'ROUTE UPDATE' || state.currentUserRole !== 'Driver') return;
+   776→    set(current => ({
+   777→      alerts: current.alerts.map(item => item.id === id ? {
+   778→        ...item, actionTaken: true, read: true,
+   779→        acknowledgedAt: new Date().toISOString(), acknowledgedBy: 'Driver'
+   780→      } : item),
+   781→      shipments: alert.shipmentId
+   782→        ? current.shipments.map(item => item.id === alert.shipmentId && item.status === 'Route Change Pending' ? { ...item, status: 'In Transit' } : item)
+   783→        : current.shipments,
+   784→      vehicles: alert.vehicleId
+   785→        ? current.vehicles.map(item => item.id === alert.vehicleId && item.status === 'Route Change Pending' ? { ...item, status: 'In Transit' } : item)
+   786→        : current.vehicles
+   787→    }));
+   788→    get().recordAuditEvent({
+   789→      eventType: 'DRIVER_ACKNOWLEDGED', entityType: 'ALERT', entityId: id,
+   790→      shipmentId: alert.shipmentId, vehicleId: alert.vehicleId,
+   791→      action: 'Driver acknowledged route update', nextState: 'In Transit'
+   792→    });
+   793→  },
+   794→
+   795→  queueIncident: (incidentData) => set((state) => {
+   796→    const newQueued: QueuedIncident = {
+   797→      id: 'QINC-' + Math.random().toString(36).substring(7),
+   798→      createdAt: new Date().toISOString(),
+   799→      incidentData,
+   800→      syncStatus: 'PENDING'
+   801→    };
+   802→    const offlineQueue = [...state.offlineQueue, newQueued];
+   803→    try { window.localStorage.setItem('northlink:offline-queue', JSON.stringify(offlineQueue)); } catch { /* local queue is best effort */ }
+   804→    return { offlineQueue };
+   805→  }),
+   806→
+   807→  setOfflineQueue: (queue) => {
+   808→    try { window.localStorage.setItem('northlink:offline-queue', JSON.stringify(queue)); } catch { /* local queue is best effort */ }
+   809→    set({ offlineQueue: queue });
+   810→  },
+   811→
+   812→  addIncident: (incident) => {
+   813→    const normalizedIncident: Incident = {
+   814→      ...incident,
+   815→      verificationStatus: incident.verificationStatus ?? 'REPORTED',
+   816→      resolutionStatus: incident.resolutionStatus ?? 'UNRESOLVED',
+   817→      status: incident.status ?? 'Reported'
+   818→    };
+   819→    set((state) => ({ incidents: [normalizedIncident, ...state.incidents] }));
+   820→    get().addEvent({ message: `New incident reported: ${incident.type} at ${incident.location}.`, type: 'warning' });
+   821→    // Note: We NO LONGER automatically pause/reroute here! 
+   822→    // It must go through 'verifyIncident' -> 'assessIncidentImpact'.
+   823→  },
+   824→
+   825→  setDemoStage: (stage) => set({ demoStage: stage }),
+   826→
+   827→  initializeScenario: () => {
+   828→    // We do NOT reset data here, we just set the initial active selections
+   829→    // The store already initializes with MED-204 and TRUCK-07 from mockData
+   830→    get().selectShipment('MED-204');
+   831→    
+   832→    get().addEvent({
+   833→      message: 'NORTHLINK AI System Online. Simulation stopped until cargo is dispatched.',
+   834→      type: 'success'
+   835→    });
+   836→  },
+   837→
+   838→  recordAuditEvent: (event) => set(state => ({
+   839→    auditTrail: [{
+   840→      ...event,
+   841→      id: `AUD-${Math.random().toString(36).slice(2)}`,
+   842→      actorRole: event.actorRole ?? state.currentUserRole,
+   843→      timestamp: new Date().toISOString()
+   844→    }, ...state.auditTrail].slice(0, 500)
+   845→  })),
+   846→
+   847→  // ── Journey Intelligence ─────────────────────────────────────────────────
+   848→
+   849→  analyzeJourney: async (shipmentId, startTime, requestedRouteId, requestedCoordinates, requestedDuration) => {
+   850→    const { journeyService } = await import('@/services/journeyService');
+   851→    const state = get();
+   852→    const shipment = state.shipments.find(s => s.id === shipmentId);
+   853→    if (!shipment) return;
+   854→
+   855→    const effectiveStartTime = startTime ?? state.journeyStartTime;
+   856→    const routeId = requestedRouteId ?? shipment.routeId;
+   857→    if (!routeId) return;
+   858→    const selectedRoute = state.activeRoutes.find(route => route.id === routeId);
+   859→
+   860→    // Need to pass the vehicle progress so segments correctly mark as completed
+   861→    const vehicle = shipment.assignedVehicleId ? state.vehicles.find(v => v.id === shipment.assignedVehicleId) : null;
+   862→    const progressMin = vehicle?.progressMinutes ?? 0;
+   863→
+   864→    const analysis = await journeyService.analyzeJourney(
+   865→      shipmentId,
+   866→      routeId,
+   867→      shipment.origin,
+   868→      shipment.destination,
+   869→      effectiveStartTime,
+   870→      state.simulationMode,
+   871→      state.incidents,
+   872→      progressMin,
+   873→      requestedCoordinates ?? selectedRoute?.coordinates,
+   874→      requestedDuration ?? selectedRoute?.currentEta
+   875→    );
+   876→
+   877→    set({ journeyAnalysis: analysis });
+   878→
+   879→    // Auto-create alert if high risk segments found
+   880→    if (analysis.outlook.highRiskSegmentCount > 0 && analysis.outlook.advanceWarnings.length > 0) {
+   881→      const w = analysis.outlook.advanceWarnings[0];
+   882→      
+   883→      // Avoid spamming the same alert
+   884→      const alertExists = get().alerts.some(a => a.title === 'Future Route Risk Detected' && a.message.includes(w.location));
+   885→      if (!alertExists) {
+   886→        get().addAlert({
+   887→          type: 'WARNING',
+   888→          title: 'Future Route Risk Detected',
+   889→          message: `High disruption risk (${Math.round(w.disruptionProbability * 100)}%) predicted at ${w.location} around ${w.expectedArrivalTime}. Cause: ${w.cause}.`,
+   890→          severity: w.severity === 'EXTREME' ? 'High' : 'Medium',
+   891→          recipientRole: 'Dispatcher',
+   892→          actionRequired: true,
+   893→          actionTaken: false
+   894→        });
+   895→      }
+   896→    }
+   897→
+   898→    // Only log if it's a new analysis or something changed significantly to avoid spam
+   899→    if (!state.journeyAnalysis || state.journeyAnalysis.outlook.forecastRisk !== analysis.outlook.forecastRisk) {
+   900→      get().addEvent({
+   901→        message: `Journey analysis updated for ${shipmentId}. ${analysis.outlook.highRiskSegmentCount} high-risk segments ahead.`,
+   902→        type: analysis.outlook.highRiskSegmentCount > 0 ? 'warning' : 'info'
+   903→      });
+   904→    }
+   905→  },
+   906→
+   907→  setJourneyStartTime: (time) => {
+   908→    set({ journeyStartTime: time });
+   909→    // Refresh analysis with new start time if a shipment is selected
+   910→    const state = get();
+   911→    if (state.selectedShipmentId) {
+   912→      state.analyzeJourney(state.selectedShipmentId, time);
+   913→    }
+   914→  },
+   915→
+   916→  refreshJourneyAnalysis: () => {
+   917→    const state = get();
+   918→    if (state.journeyAnalysis) {
+   919→      state.analyzeJourney(state.journeyAnalysis.shipmentId, state.journeyStartTime);
+   920→    } else if (state.selectedShipmentId) {
+   921→      state.analyzeJourney(state.selectedShipmentId, state.journeyStartTime);
+   922→    }
+   923→  },
+   924→
+   925→  setCurrentDriverVehicleId: (id) => set({ currentDriverVehicleId: id }),
+   926→
+   927→  setTrackedVehicleId: (id) => set({ trackedVehicleId: id }),
+   928→
+   929→  hydrateShipments: (persistedShipments) => set(state => {
+   930→    const persistedIds = new Set(persistedShipments.map(shipment => shipment.id));
+   931→    const localOnlyShipments = state.shipments.filter(shipment => !persistedIds.has(shipment.id));
+   932→    return {
+   933→      shipments: [...persistedShipments, ...localOnlyShipments],
+   934→      shipmentsHydrated: true,
+   935→      shipmentPersistenceError: null
+   936→    };
+   937→  }),
+   938→
+   939→  persistShipments: async () => {
+   940→    const shipments = get().shipments;
+   941→    try {
+   942→      window.localStorage.setItem('northlink:shipments', JSON.stringify(shipments));
+   943→    } catch {
+   944→      set({ shipmentPersistenceError: 'Local shipment storage is unavailable.' });
+   945→    }
+   946→    try {
+   947→      const response = await fetch('/api/shipments', {
+   948→        method: 'POST',
+   949→        headers: { 'Content-Type': 'application/json' },
+   950→        body: JSON.stringify({ shipments })
+   951→      });
+   952→      if (!response.ok) throw new Error('Shipment persistence failed');
+   953→      set({ shipmentPersistenceError: null });
+   954→    } catch {
+   955→      set({ shipmentPersistenceError: 'Shipment changes are currently local and could not be persisted.' });
+   956→    }
+   957→  },
+   958→
+   959→  addShipment: (shipment) => {
+   960→    set(state => ({
+   961→      shipments: [shipment, ...state.shipments]
+   962→    }));
+   963→    get().addEvent({
+   964→      message: `New cargo dispatched: ${shipment.id} (${shipment.cargoType}) — ${shipment.origin} → ${shipment.destination}`,
+   965→      type: 'info'
+   966→    });
+   967→    void get().persistShipments();
+   968→  }
+   969→}));
+   970→
