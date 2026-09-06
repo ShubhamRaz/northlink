@@ -112,5 +112,17 @@
   - Problem: Static values like `240` minutes hijacked dynamic ETAs.
   - Fix: Deprioritized fallbacks to ensure dynamic `route.currentEta` determines travel duration.
 ## Phase 8 — Gemini
+- [x] Integrate Official Gemini SDK
+  - Problem: `z-ai-web-dev-sdk` was used as a dummy.
+  - Fix: Replaced it with the official `@google/generative-ai` package and used the `gemini-1.5-flash` model.
+- [x] Secure Configuration
+  - Problem: Provider secret might leak.
+  - Fix: Bound the key solely to the Next.js server-side API route. Updated `.env.example` with empty `GEMINI_API_KEY=`.
+- [x] Authoritative Explainer Role
+  - Problem: AI might act on requests and assume decision-making powers.
+  - Fix: Wrote robust `SYSTEM_INSTRUCTION` directly commanding the model to only explain and never modify operational state.
+- [x] Graceful Failover
+  - Problem: App would crash or hang if LLM services went offline.
+  - Fix: Enforced HTTP 503 response on missing config, triggering seamless transition into local offline/fallback mode.
 ## Phase 9 — Testing
 ## Phase 10 — Final Audit
