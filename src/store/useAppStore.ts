@@ -483,8 +483,18 @@ export const useAppStore = create<AppState>((set, get) => ({
     }));
 
     if (shipment.assignedVehicleId) {
+      const activeRoute = state.routesByShipment[shipmentId]?.find(r => r.id === shipment.routeId);
       set(s => ({
-        vehicles: s.vehicles.map(v => v.id === shipment.assignedVehicleId ? { ...v, status: 'In Transit', progress: 0, progressMinutes: 0 } : v)
+        vehicles: s.vehicles.map(v => v.id === shipment.assignedVehicleId ? {
+          ...v,
+          status: 'In Transit',
+          progress: 0,
+          progressMinutes: 0,
+          completedDistance: 0,
+          historicalCompletedDistance: 0,
+          remainingDistance: activeRoute?.distance || 0,
+          totalRouteDistance: activeRoute?.distance || 0,
+        } : v)
       }));
     }
 
@@ -741,7 +751,11 @@ export const useAppStore = create<AppState>((set, get) => ({
           progressMinutes: 0,
           progress: 0,
           status: 'Route Change Pending',
-          eta: hist.eta || v.eta
+          eta: hist.eta || v.eta,
+          historicalCompletedDistance: (v.historicalCompletedDistance || 0) + ((v.progress || 0) * (v.totalRouteDistance || 0)),
+          completedDistance: (v.historicalCompletedDistance || 0) + ((v.progress || 0) * (v.totalRouteDistance || 0)),
+          remainingDistance: finalRoute.distance,
+          totalRouteDistance: finalRoute.distance
         } : v)
       }));
 

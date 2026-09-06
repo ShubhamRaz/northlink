@@ -42,6 +42,10 @@ export interface Vehicle {
   progress?: number; // 0 to 1 percentage of completion
   progressMinutes?: number; // Tracks simulation time spent on route
   currentRouteGeometry?: [number, number][];
+  completedDistance?: number;
+  historicalCompletedDistance?: number;
+  remainingDistance?: number;
+  totalRouteDistance?: number;
 }
 
 export interface Incident {

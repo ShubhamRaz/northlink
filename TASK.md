@@ -96,6 +96,21 @@
   - Problem: `addShipment` existed alongside `createShipment`.
   - Fix: Removed `addShipment` to enforce a single lifecycle through `createShipment`.
 ## Phase 7 — Simulation and ETA
+- [x] Simulation Start/Stop Conditions
+  - Problem: Simulation auto-started incorrectly and lacked cleanup on completion.
+  - Fix: Restricted start strictly to explicitly dispatched active shipments. Added auto-pause on delivery.
+- [x] Authentic Distance and Geometry
+  - Problem: Progress didn't use real routing distances, just static fallbacks.
+  - Fix: Synchronized movement and distance tracking directly from OSRM distance and route geometry.
+- [x] Remaining vs Historical Progress
+  - Problem: Rerouting from mid-journey reset historical progress.
+  - Fix: Established `historicalCompletedDistance` explicitly to track offset across reroutes.
+- [x] Single Simulation Timer
+  - Problem: Possibility of duplicate loops causing race conditions and erratic speeds.
+  - Fix: Forced one authoritative interval tracking all active shipments at once.
+- [x] Legacy Dummy Fallbacks 
+  - Problem: Static values like `240` minutes hijacked dynamic ETAs.
+  - Fix: Deprioritized fallbacks to ensure dynamic `route.currentEta` determines travel duration.
 ## Phase 8 — Gemini
 ## Phase 9 — Testing
 ## Phase 10 — Final Audit

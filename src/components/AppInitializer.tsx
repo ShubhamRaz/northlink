@@ -54,15 +54,8 @@ export function AppInitializer() {
         });
       })
       .finally(() => {
-        // After hydration, restart the simulation if there are in-transit shipments
-        const state = useAppStore.getState();
-        const hasInTransit = state.shipments.some(s =>
-          s.status === 'In Transit' && s.assignedVehicleId &&
-          state.vehicles.some(v => v.id === s.assignedVehicleId && v.status === 'In Transit')
-        );
-        if (hasInTransit && state.networkOnline && !state.simulationActive) {
-          simulationService.start();
-        }
+        // Simulation must be manually resumed after a reload if needed, 
+        // per Phase 7 requirements (no auto-start on app load).
       });
 
     return () => {

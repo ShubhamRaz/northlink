@@ -53,6 +53,11 @@ class SimulationEngine {
     // Move all active shipments
     const activeShipments = state.shipments.filter(s => s.status === 'In Transit' && s.assignedVehicleId);
 
+    if (activeShipments.length === 0) {
+      this.pause();
+      return;
+    }
+
     activeShipments.forEach(shipment => {
       const vehicle = state.vehicles.find(v => v.id === shipment.assignedVehicleId);
       if (!vehicle || vehicle.status !== 'In Transit') return;
@@ -122,104 +127,73 @@ class SimulationEngine {
       const isSelectedAnalysis = state.journeyAnalysis?.shipmentId === shipment.id
         && state.journeyAnalysis?.routeId === shipment.routeId;
 
-      // Use the journey analysis duration only if it matches the current route
-      const routeDuration = isSelectedAnalysis
-        ? Math.max(state.journeyAnalysis!.outlook.currentTravelMinutes, 1)
-        : 240;
-      const currentProgressMinutes = vehicle.progressMinutes ?? (vehicle.progress ?? 0) * routeDuration;
+      // Ensure we have a valid route duration from active route
+      let routeDuration = 240; // Default fallback only if absolutely necessary
+      let currentRouteDistance = vehicle.remainingDistance || 0;
+      const routeAlt = (state.routesByShipment[shipment.id] || []).find(a => a.id === shipment.routeId);
+      if (routeAlt) {
+        routeDuration = routeAlt.currentEta;
+        currentRouteDistance = routeAlt.distance;
+      }
+      
+      // Use journey analysis duration if it's more precise and matches the current route
+      if (isSelectedAnalysis && state.journeyAnalysis) {
+        routeDuration = Math.max(state.journeyAnalysis.outlook.currentTravelMinutes, 1);
+      }
+      
+      // Prevent division by zero
+      if (routeDuration <= 0) routeDuration = 1;
+
+      const currentProgressMinutes = vehicle.progressMinutes ?? 0;
       const newProgress = Math.min(currentProgressMinutes + simulatedMinutesElapsed, routeDuration);
+      const fraction = Math.max(0, Math.min(1, newProgress / routeDuration));
+      
       let newCoords = vehicle.coordinates;
       let currentSpeed = vehicle.speed;
 
-      if (isSelectedAnalysis && state.journeyAnalysis) {
-        // Precise interpolation using journey analysis segments
-        const segments = state.journeyAnalysis.segments;
-        const activeSegment = segments.find(s => !s.isCompleted && s.isActive) || segments.find(s => !s.isCompleted);
-
-        if (activeSegment && activeSegment.geometry && activeSegment.geometry.length > 0) {
-          const segmentStartMin = activeSegment.sequence === 1 ? 0 : 
-            segments.slice(0, activeSegment.sequence - 1).reduce((acc, s) => acc + s.estimatedTravelMinutes, 0);
-          
-          const minIntoSegment = newProgress - segmentStartMin;
-          const fraction = Math.max(0, Math.min(1, minIntoSegment / activeSegment.estimatedTravelMinutes));
-
-          const geom = activeSegment.geometry;
-          const exactIndex = fraction * (geom.length - 1);
-          const lower = Math.floor(exactIndex);
-          const upper = Math.ceil(exactIndex);
-          
-          if (lower === upper) {
-            newCoords = geom[lower];
+      if (vehicle.currentRouteGeometry?.length) {
+        const geom = vehicle.currentRouteGeometry;
+        const exactIndex = fraction * (geom.length - 1);
+        const lower = Math.floor(exactIndex);
+        const upper = Math.ceil(exactIndex);
+        
+        if (lower === upper) {
+          newCoords = geom[lower];
+        } else {
+          const remainder = exactIndex - lower;
+          const [lat1, lon1] = geom[lower];
+          const [lat2, lon2] = geom[upper];
+          newCoords = [lat1 + (lat2 - lat1) * remainder, lon1 + (lon2 - lon1) * remainder];
+        }
+        
+        // Speed calculation based on journey segment if available
+        if (isSelectedAnalysis && state.journeyAnalysis) {
+          const segments = state.journeyAnalysis.segments;
+          const activeSegment = segments.find(s => !s.isCompleted && s.isActive) || segments.find(s => !s.isCompleted);
+          if (activeSegment) {
+            const baseSpeed = activeSegment.accessibility === 'OPEN' ? 60 : 
+                              activeSegment.accessibility === 'CAUTION' ? 40 : 20;
+            currentSpeed = baseSpeed;
           } else {
-            const remainder = exactIndex - lower;
-            const [lat1, lon1] = geom[lower];
-            const [lat2, lon2] = geom[upper];
-            newCoords = [lat1 + (lat2 - lat1) * remainder, lon1 + (lon2 - lon1) * remainder];
+            currentSpeed = 50;
           }
-
-          const baseSpeed = activeSegment.accessibility === 'OPEN' ? 60 : 
-                            activeSegment.accessibility === 'CAUTION' ? 40 : 20;
-          currentSpeed = baseSpeed + (Math.random() * 10 - 5);
-        }
-      } else if (vehicle.currentRouteGeometry?.length) {
-        const geom = vehicle.currentRouteGeometry;
-        const fraction = Math.max(0, Math.min(1, newProgress / routeDuration));
-        const exactIndex = fraction * (geom.length - 1);
-        const lower = Math.floor(exactIndex);
-        const upper = Math.ceil(exactIndex);
-        if (lower === upper) {
-          newCoords = geom[lower];
         } else {
-          const remainder = exactIndex - lower;
-          const [lat1, lon1] = geom[lower];
-          const [lat2, lon2] = geom[upper];
-          newCoords = [lat1 + (lat2 - lat1) * remainder, lon1 + (lon2 - lon1) * remainder];
+          currentSpeed = 50;
         }
-        currentSpeed = 50 + (Math.random() * 10 - 5);
-      } else if (vehicle.currentRouteGeometry?.length) {
-        // Fallback: use the vehicle's stored OSRM route geometry
-        const geom = vehicle.currentRouteGeometry;
-        const fraction = Math.max(0, Math.min(1, newProgress / routeDuration));
-
-        const exactIndex = fraction * (geom.length - 1);
-        const lower = Math.floor(exactIndex);
-        const upper = Math.ceil(exactIndex);
-        if (lower === upper) {
-          newCoords = geom[lower];
-        } else {
-          const remainder = exactIndex - lower;
-          const [lat1, lon1] = geom[lower];
-          const [lat2, lon2] = geom[upper];
-          newCoords = [lat1 + (lat2 - lat1) * remainder, lon1 + (lon2 - lon1) * remainder];
-        }
-        currentSpeed = 50 + (Math.random() * 10 - 5);
-      } else if (vehicle.currentRouteId && ROUTE_COORDS[vehicle.currentRouteId]) {
-        // Last-resort fallback using static ROUTE_COORDS
-        const geom = ROUTE_COORDS[vehicle.currentRouteId];
-        const fraction = Math.max(0, Math.min(1, newProgress / 240));
-
-        const exactIndex = fraction * (geom.length - 1);
-        const lower = Math.floor(exactIndex);
-        const upper = Math.ceil(exactIndex);
-
-        if (lower === upper) {
-          newCoords = geom[lower];
-        } else {
-          const remainder = exactIndex - lower;
-          const [lat1, lon1] = geom[lower];
-          const [lat2, lon2] = geom[upper];
-          newCoords = [lat1 + (lat2 - lat1) * remainder, lon1 + (lon2 - lon1) * remainder];
-        }
-
-        currentSpeed = 50 + (Math.random() * 10 - 5);
       }
+
+      const activeCompletedDistance = fraction * currentRouteDistance;
+      const overallCompletedDistance = (vehicle.historicalCompletedDistance || 0) + activeCompletedDistance;
+      const currentRemainingDistance = currentRouteDistance - activeCompletedDistance;
 
       state.updateVehicle(vehicle.id, {
         progressMinutes: newProgress,
-        progress: newProgress / routeDuration,
+        progress: fraction,
         coordinates: newCoords,
+        completedDistance: overallCompletedDistance,
+        remainingDistance: currentRemainingDistance,
         eta: newProgress >= routeDuration ? '--' : `${Math.floor((routeDuration - newProgress) / 60)}h ${Math.round((routeDuration - newProgress) % 60)}m`,
-        location: `Route progress ${Math.round((newProgress / routeDuration) * 100)}%`,
+        location: `Route progress ${Math.round(fraction * 100)}%`,
         speed: Math.round(currentSpeed)
       });
 
@@ -231,7 +205,7 @@ class SimulationEngine {
       }));
 
       if (newProgress >= routeDuration) {
-        state.updateVehicle(vehicle.id, { status: 'Delivered', speed: 0 });
+        state.updateVehicle(vehicle.id, { status: 'Delivered', speed: 0, progress: 1 });
         useAppStore.setState(current => ({
           shipments: current.shipments.map(item => item.id === shipment.id ? { ...item, status: 'Delivered' } : item)
         }));
