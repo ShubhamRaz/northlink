@@ -45,7 +45,7 @@ interface AppState {
   selectedCorridorId: string | null;
 
   // AI & Routing State
-  activeRoutes: RouteAlternative[];
+  routesByShipment: Record<string, RouteAlternative[]>;
   decisionHistory: DecisionHistory[];
   routeRecommendations: RouteRecommendation[];
   auditTrail: AuditEvent[];
@@ -124,11 +124,10 @@ interface AppState {
   refreshJourneyAnalysis: () => void;
   setCurrentDriverVehicleId: (id: string) => void;
   setTrackedVehicleId: (id: string | null) => void;
-  addShipment: (shipment: Shipment) => void;
   hydrateShipments: (shipments: Shipment[]) => void;
   persistShipments: () => Promise<void>;
   persistVehicles: () => void;
-  hydrateVehicles: (vehicles: Vehicle[], activeRoutes: RouteAlternative[], routeRecommendations?: RouteRecommendation[]) => void;
+  hydrateVehicles: (vehicles: Vehicle[], routesByShipment: Record<string, RouteAlternative[]>, routeRecommendations?: RouteRecommendation[]) => void;
   addVehicle: (vehicle: Vehicle) => void;
   injectDisasterAtPoint: (coordinates: [number, number], type: Incident['type'], severity: Incident['severity'], location: string) => void;
 }
@@ -176,7 +175,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   selectedIncidentId: null,
   selectedCorridorId: null,
 
-  activeRoutes: [],
+  routesByShipment: {},
   decisionHistory: [],
   routeRecommendations: [],
   auditTrail: [],
@@ -284,8 +283,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       selectedIncidentId: null,
       selectedCorridorId: null,
       journeyAnalysis: null,
-      // Only clear activeRoutes if the new shipment is not the one that owns them
-      activeRoutes: state.shipments.find(s => s.id === id)?.routeId ? state.activeRoutes : [],
+      // State is now isolated per shipment, no need to clear anything on selection change
     };
   }),
   selectIncident: (id) => set({ selectedIncidentId: id, selectedVehicleId: null, selectedShipmentId: null, selectedCorridorId: null }),
@@ -359,14 +357,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     const bestRoute = alternatives.find(a => a.isFeasible);
     
     if (bestRoute) {
-      set(s => ({ activeRoutes: alternatives }));
+      set(s => ({ routesByShipment: { ...s.routesByShipment, [shipmentId]: alternatives } }));
       state.addEvent({
         message: `Route analysis completed for ${shipment.id}. Recommended: ${bestRoute.name}. Pending Dispatcher Decision.`,
         type: 'info'
       });
       await state.analyzeJourney(shipmentId, actualStart, bestRoute.id, bestRoute.coordinates, bestRoute.currentEta);
     } else {
-      set({ activeRoutes: alternatives });
+      set(s => ({ routesByShipment: { ...s.routesByShipment, [shipmentId]: alternatives } }));
       state.addEvent({ message: `ALERT: No feasible routes found for ${shipment.id}`, type: 'critical' });
     }
   },
@@ -375,7 +373,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     const state = get();
     if (state.currentUserRole !== 'Dispatcher' && state.currentUserRole !== 'Admin') return;
     const shipment = state.shipments.find(s => s.id === shipmentId);
-    const route = state.activeRoutes.find(r => r.id === routeId);
+    const candidateRoutes = state.routesByShipment[shipmentId] || [];
+    const route = candidateRoutes.find(r => r.id === routeId);
     if (!shipment || !route) return;
 
     const decision: DecisionHistory = {
@@ -383,7 +382,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       timestamp: new Date().toLocaleTimeString(),
       shipmentId,
       selectedRouteId: route.id,
-      candidateRoutes: state.activeRoutes,
+      candidateRoutes,
       trigger: 'Initial Route Approval',
       reason: route.reasons[0] || 'Dispatcher selected route',
       decisionType: 'INITIAL_ROUTE_APPROVAL',
@@ -428,7 +427,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     const state = get();
     if (state.currentUserRole !== 'Dispatcher' && state.currentUserRole !== 'Admin') return;
     const shipment = state.shipments.find(s => s.id === shipmentId);
-    const route = state.activeRoutes.find(r => r.id === routeId);
+    const candidateRoutes = state.routesByShipment[shipmentId] || [];
+    const route = candidateRoutes.find(r => r.id === routeId);
     if (!shipment || !route) return;
 
     const decision: DecisionHistory = {
@@ -436,7 +436,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       timestamp: new Date().toLocaleTimeString(),
       shipmentId,
       selectedRouteId: route.id,
-      candidateRoutes: state.activeRoutes,
+      candidateRoutes,
       trigger: 'Manual Override',
       reason,
       decisionType: 'MANUAL_OVERRIDE',
@@ -635,10 +635,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         } catch (error) {
           console.error("Failed to reassess journey:", error);
           // Fallback if the router fails completely, but usually it returns at least a prototype
-          alternatives = state.activeRoutes;
+          alternatives = state.routesByShipment[shipment.id] || [];
         }
 
-        const currentRouteAlt = state.activeRoutes.find(a => a.id === shipment.routeId);
+        const currentRouteAlt = (state.routesByShipment[shipment.id] || []).find(a => a.id === shipment.routeId);
         
         // Find the best fresh alternative
         const feasibleOsrm = alternatives.find(a => a.isFeasible && a.coordinates.length > 2);
@@ -663,7 +663,7 @@ export const useAppStore = create<AppState>((set, get) => ({
               ? `NORTHLINK detected a verified unresolved ${incident.type.toLowerCase()} ahead. All candidate routes to ${shipment.destination} are affected. ${bestRoute.name} is the least-risky option at ${bestRoute.risk}% risk with an estimated ${Math.floor(bestRoute.currentEta / 60)}h ${bestRoute.currentEta % 60}m journey. Vehicle is paused for safety. Dispatcher must decide whether to proceed, reroute, or hold.`
               : `NORTHLINK detected a verified unresolved ${incident.type.toLowerCase()} ahead on the current route. The affected route has ${currentRouteAlt?.risk ?? 100}% predicted risk; ${bestRoute.name} is recommended at ${bestRoute.risk}% risk with an estimated ${Math.floor(bestRoute.currentEta / 60)}h ${bestRoute.currentEta % 60}m journey.`
           };
-          set(s => ({ routeRecommendations: [rec, ...s.routeRecommendations], activeRoutes: alternatives }));
+          set(s => ({ routeRecommendations: [rec, ...s.routeRecommendations], routesByShipment: { ...s.routesByShipment, [shipment.id]: alternatives } }));
           get().persistVehicles();
           import('@/services/assistantService').then(({ assistantService }) => {
             assistantService.askQuestion(`Why was ${bestRoute.name} recommended for ${shipment.id}?`).then(({ reply }) => {
@@ -836,7 +836,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       incidents: JSON.parse(JSON.stringify(mockIncidents)),
       corridors: JSON.parse(JSON.stringify(mockCorridors)),
       alerts: JSON.parse(JSON.stringify(mockAlerts)),
-      activeRoutes: [],
+      routesByShipment: {},
       decisionHistory: [],
       routeRecommendations: [],
       offlineQueue: [],
@@ -971,7 +971,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const effectiveStartTime = startTime ?? state.journeyStartTime;
     const routeId = requestedRouteId ?? shipment.routeId;
     if (!routeId) return;
-    const selectedRoute = state.activeRoutes.find(route => route.id === routeId);
+    const selectedRoute = (state.routesByShipment[shipmentId] || []).find(route => route.id === routeId);
 
     // Need to pass the vehicle progress so segments correctly mark as completed
     const vehicle = shipment.assignedVehicleId ? state.vehicles.find(v => v.id === shipment.assignedVehicleId) : null;
@@ -1088,23 +1088,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  addShipment: (shipment) => {
-    set(state => ({
-      shipments: [shipment, ...state.shipments]
-    }));
-    get().addEvent({
-      message: `New cargo dispatched: ${shipment.id} (${shipment.cargoType}) — ${shipment.origin} → ${shipment.destination}`,
-      type: 'info'
-    });
-    void get().persistShipments();
-  },
+  // addShipment removed. use createShipment instead.
 
   persistVehicles: () => {
-    const { vehicles, activeRoutes, routeRecommendations } = get();
+    const { vehicles, routesByShipment, routeRecommendations } = get();
     try {
       window.localStorage.setItem('northlink:vehicles', JSON.stringify({
         vehicles,
-        activeRoutes,
+        routesByShipment,
         routeRecommendations
       }));
     } catch {
@@ -1112,10 +1103,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  hydrateVehicles: (vehicles, activeRoutes, routeRecommendations) => {
+  hydrateVehicles: (vehicles, routesByShipment, routeRecommendations) => {
     set(state => ({
       vehicles: vehicles.length > 0 ? vehicles : state.vehicles,
-      activeRoutes: activeRoutes.length > 0 ? activeRoutes : state.activeRoutes,
+      routesByShipment: routesByShipment && Object.keys(routesByShipment).length > 0 ? routesByShipment : state.routesByShipment,
       routeRecommendations: routeRecommendations && routeRecommendations.length > 0 ? routeRecommendations : state.routeRecommendations,
     }));
   },

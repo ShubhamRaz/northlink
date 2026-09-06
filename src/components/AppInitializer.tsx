@@ -20,8 +20,10 @@ export function AppInitializer() {
       const localVehicles = window.localStorage.getItem('northlink:vehicles');
       if (localVehicles) {
         const parsed = JSON.parse(localVehicles);
-        if (parsed && Array.isArray(parsed.vehicles) && Array.isArray(parsed.activeRoutes)) {
-          useAppStore.getState().hydrateVehicles(parsed.vehicles, parsed.activeRoutes, parsed.routeRecommendations);
+        if (parsed && Array.isArray(parsed.vehicles)) {
+          // Backward compatibility for old storage format
+          const routesByShipment = parsed.routesByShipment || (Array.isArray(parsed.activeRoutes) ? { 'MED-204': parsed.activeRoutes } : {});
+          useAppStore.getState().hydrateVehicles(parsed.vehicles, routesByShipment, parsed.routeRecommendations);
         }
       }
     } catch {

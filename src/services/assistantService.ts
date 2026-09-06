@@ -42,7 +42,7 @@ export const assistantService = {
       simulationMode: store.simulationMode,
       networkOnline: store.networkOnline,
       activeShipment: store.selectedShipmentId ? store.shipments.find(s => s.id === store.selectedShipmentId) : null,
-      activeRoutes: store.activeRoutes.map(r => ({
+      activeRoutes: (store.routesByShipment[store.selectedShipmentId || ''] || []).map(r => ({
         id: r.id,
         name: r.name,
         isFeasible: r.isFeasible,

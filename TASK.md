@@ -83,6 +83,18 @@
   - Problem: Resolved incidents left vehicles paused indefinitely or left stale recommendations active.
   - Fix: `resolveIncident` cancels stale recommendations and gracefully resumes vehicles that were explicitly paused by the incident.
 ## Phase 6 — State Management
+- [x] Fix global activeRoutes
+  - Problem: `activeRoutes` was shared globally among all shipments.
+  - Fix: Changed `activeRoutes` to a `routesByShipment` dictionary.
+- [x] Route Recommendation Scoping
+  - Problem: Route recommendations leaked across shipments.
+  - Fix: Ensured `routeRecommendations` and UI selectors use `shipmentId`.
+- [x] Dispatcher Decision Isolation
+  - Problem: Mid-journey decisions and impact assessments applied globally.
+  - Fix: Scoped `decideMidJourneyRoute` and `assessIncidentImpact` strictly to the relevant shipment's routes.
+- [x] Legacy Cleanup
+  - Problem: `addShipment` existed alongside `createShipment`.
+  - Fix: Removed `addShipment` to enforce a single lifecycle through `createShipment`.
 ## Phase 7 — Simulation and ETA
 ## Phase 8 — Gemini
 ## Phase 9 — Testing

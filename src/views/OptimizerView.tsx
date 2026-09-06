@@ -14,7 +14,7 @@ export function OptimizerView() {
   // Use individual selectors to avoid re-rendering on every simulation tick
   // (vehicles change every tick but this component doesn't need them)
   const shipments = useAppStore(s => s.shipments);
-  const activeRoutes = useAppStore(s => s.activeRoutes);
+  const activeRoutes = useAppStore(s => s.routesByShipment[s.selectedShipmentId || ''] || []);
   const decisionHistory = useAppStore(s => s.decisionHistory);
   const routeRecommendations = useAppStore(s => s.routeRecommendations);
   const selectedShipmentId = useAppStore(s => s.selectedShipmentId);
