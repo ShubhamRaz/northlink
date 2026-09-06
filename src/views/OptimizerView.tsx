@@ -10,11 +10,13 @@ import { JourneyIntelligencePanel } from '@/features/journey/JourneyIntelligence
 
 const Map = dynamic(() => import('@/features/command-center/MapComponent'), { ssr: false });
 
+const EMPTY_ROUTES: any[] = [];
+
 export function OptimizerView() {
   // Use individual selectors to avoid re-rendering on every simulation tick
   // (vehicles change every tick but this component doesn't need them)
   const shipments = useAppStore(s => s.shipments);
-  const activeRoutes = useAppStore(s => s.routesByShipment[s.selectedShipmentId || ''] || []);
+  const activeRoutes = useAppStore(s => (s.selectedShipmentId ? s.routesByShipment[s.selectedShipmentId] : undefined) || EMPTY_ROUTES);
   const decisionHistory = useAppStore(s => s.decisionHistory);
   const routeRecommendations = useAppStore(s => s.routeRecommendations);
   const selectedShipmentId = useAppStore(s => s.selectedShipmentId);
